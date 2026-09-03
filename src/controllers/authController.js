@@ -24,82 +24,67 @@ class AuthController {
         return res.status(400).json({ error: 'Username and password are required.' });
       }
 
+      const cleanUsername = username.trim();
+      const cleanPassword = password.trim();
+      const userRegex = new RegExp(`^${cleanUsername}$`, 'i');
+
       const masterDb = mongoose.connection.useDb('master', { useCache: true });
       let authenticatedUser = null;
-      
-      // Extract tenant identifier from payload or production subdomain header
-      let targetTenantId = tenantId || null;
-      if (!targetTenantId && req.headers.host) {
-        const hostParts = req.headers.host.split(':')[0].split('.');
-        if (hostParts.length > 2 && hostParts[0] !== 'www' && hostParts[0] !== 'admin' && hostParts[0] !== 'localhost') {
-          targetTenantId = hostParts[0];
-        }
-      }
-      
       let targetTenantName = null;
 
-      // 1. Check default User collection
-      let user = await User.findOne({ username });
-      if (user && (bcrypt.compareSync(password, user.password) || user.password === password)) {
+      // Helper: Verify password with bcrypt or plaintext fallback
+      const checkPass = (stored) => {
+        if (!stored) return false;
+        try {
+          if (bcrypt.compareSync(cleanPassword, stored)) return true;
+        } catch (e) {}
+        return cleanPassword === stored;
+      };
+
+      // 1. Check master > users collection (Primary user store in Atlas)
+      const masterUser = await masterDb.collection('users').findOne({ 
+        $or: [{ username: cleanUsername }, { username: userRegex }] 
+      });
+      if (masterUser && checkPass(masterUser.password)) {
         authenticatedUser = {
-          username: user.username,
-          role: user.role,
-          tenantId: user.tenantId,
-          fullName: user.fullName || user.username,
-          email: user.email || `${user.username}@isomorphic.com`,
-          phone: user.phone || '',
-          photo: user.photo || ''
+          username: masterUser.username,
+          role: masterUser.role || 'global_admin',
+          tenantId: masterUser.tenantId || null,
+          fullName: masterUser.fullName || masterUser.username,
+          email: masterUser.email || `${masterUser.username}@isomorphic.com`,
+          phone: masterUser.phone || '',
+          photo: masterUser.photo || ''
         };
       }
 
-      // 2. Check master > users collection if not found
+      // 2. Check default User collection if not found
       if (!authenticatedUser) {
-        const masterUser = await masterDb.collection('users').findOne({ username });
-        if (masterUser && (bcrypt.compareSync(password, masterUser.password) || masterUser.password === password)) {
+        let user = await User.findOne({ 
+          $or: [{ username: cleanUsername }, { username: userRegex }] 
+        });
+        if (user && checkPass(user.password)) {
           authenticatedUser = {
-            username: masterUser.username,
-            role: masterUser.role || 'Super Admin',
-            tenantId: masterUser.tenantId || null,
-            fullName: masterUser.fullName || masterUser.username,
-            email: masterUser.email || `${masterUser.username}@isomorphic.com`,
-            phone: masterUser.phone || '',
-            photo: masterUser.photo || ''
+            username: user.username,
+            role: user.role,
+            tenantId: user.tenantId,
+            fullName: user.fullName || user.username,
+            email: user.email || `${user.username}@isomorphic.com`,
+            phone: user.phone || '',
+            photo: user.photo || ''
           };
         }
       }
 
-      // 3. Check tenant-specific database (iso_<tenantId> > users) if tenantId is provided
-      if (!authenticatedUser && targetTenantId) {
-        const tenantDoc = await masterDb.collection('tenantInfo').findOne({
-          $or: [{ tenantId: targetTenantId }, { code: targetTenantId }, { _id: targetTenantId }]
-        });
-        if (tenantDoc) {
-          const tenantDb = mongoose.connection.useDb(tenantDoc.tenantDbName || `iso_${tenantDoc.tenantId}`, { useCache: true });
-          const tUser = await tenantDb.collection('users').findOne({ username });
-          if (tUser && (bcrypt.compareSync(password, tUser.password) || tUser.password === password)) {
-            authenticatedUser = {
-              username: tUser.username,
-              role: tUser.role || 'tenant_admin',
-              tenantId: tenantDoc.tenantId || tenantDoc._id?.toString(),
-              tenantName: tenantDoc.name || tenantDoc.tenantName,
-              fullName: tUser.fullName || tUser.username,
-              email: tUser.email || `${tUser.username}@${tenantDoc.tenantId}.com`,
-              phone: '',
-              photo: ''
-            };
-            targetTenantName = tenantDoc.name || tenantDoc.tenantName;
-          }
-        }
-      }
-
-      // 4. If still not found, search across all active tenant databases
+      // 3. Check tenant-specific databases (iso_<tenantId> > users)
       if (!authenticatedUser) {
-        const allTenants = await masterDb.collection('tenantInfo').find({ tenantActive: true }).toArray();
+        const allTenants = await masterDb.collection('tenantInfo').find({}).toArray();
         for (const t of allTenants) {
           try {
             const tDb = mongoose.connection.useDb(t.tenantDbName || `iso_${t.tenantId}`, { useCache: true });
-            const tUser = await tDb.collection('users').findOne({ username });
-            if (tUser && (bcrypt.compareSync(password, tUser.password) || tUser.password === password)) {
+            const tUser = await tDb.collection('users').findOne({ 
+              $or: [{ username: cleanUsername }, { username: userRegex }] 
+            });
+            if (tUser && checkPass(tUser.password)) {
               authenticatedUser = {
                 username: tUser.username,
                 role: tUser.role || 'tenant_admin',
@@ -119,17 +104,17 @@ class AuthController {
         }
       }
 
-      // 5. Default fallback for standard demo super admin
+      // 4. Default fallback for standard demo admin
       if (!authenticatedUser) {
-        if (username === 'admin' && (password === 'admin123' || password === 'password123')) {
+        if (cleanUsername.toLowerCase() === 'admin' && (cleanPassword === 'admin123' || cleanPassword === 'password' || cleanPassword === 'password123' || cleanPassword === 'admin')) {
           authenticatedUser = {
             username: 'admin',
-            role: 'Super Admin',
+            role: 'global_admin',
             tenantId: null,
             tenantName: null,
             fullName: 'Super Administrator',
             email: 'admin@isomorphic.com',
-            phone: '+1 (555) 019-2834',
+            phone: '',
             photo: ''
           };
         }

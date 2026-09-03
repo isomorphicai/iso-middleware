@@ -17,28 +17,13 @@
   const DEFAULT_CONFIG_API_URL = `${HOSTED_MIDDLEWARE_URL}/api/bot-config`;
   const DEFAULT_CHAT_API_URL = `${HOSTED_MIDDLEWARE_URL}/api/chat`;
 
-  // Isometric SVG Logo
-  const ISO_LOGO_SVG = `
-    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="url(#isoGrad1)" stroke="rgba(255,255,255,0.4)" stroke-width="0.75" stroke-linejoin="round"/>
-      <path d="M2 7V17L12 22V12L2 7Z" fill="url(#isoGrad2)" stroke="rgba(255,255,255,0.4)" stroke-width="0.75" stroke-linejoin="round"/>
-      <path d="M12 12V22L22 17V7L12 12Z" fill="url(#isoGrad3)" stroke="rgba(255,255,255,0.4)" stroke-width="0.75" stroke-linejoin="round"/>
-      <defs>
-        <linearGradient id="isoGrad1" x1="2" y1="2" x2="22" y2="12" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stop-color="#C5A059"/>
-          <stop offset="100%" stop-color="#EFE6D1"/>
-        </linearGradient>
-        <linearGradient id="isoGrad2" x1="2" y1="7" x2="12" y2="22" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stop-color="#0A2240"/>
-          <stop offset="100%" stop-color="#16365C"/>
-        </linearGradient>
-        <linearGradient id="isoGrad3" x1="12" y1="12" x2="22" y2="22" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stop-color="#C5A059"/>
-          <stop offset="100%" stop-color="#0A2240"/>
-        </linearGradient>
-      </defs>
+  // Sleek Chatbot Bubble SVG (Used across Launcher, Header, and Bot Avatars)
+  const CHAT_LAUNCHER_SVG = `
+    <svg class="iso-chat-icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
     </svg>
   `;
+  const ISO_LOGO_SVG = CHAT_LAUNCHER_SVG;
 
   // --------------------------------------------------------
   // 1. DEFAULT CONFIGURATION (Based on MongoDB Atlas Schema)
@@ -465,38 +450,41 @@
         align-items: ${isAlignLeft ? "flex-start" : "flex-end"};
       }
 
-      /* Help Notification Callout Bubble */
+      /* Help Notification Callout Bubble (Positioned directly above launcher button) */
       .iso-help-callout {
         position: absolute;
-        bottom: calc(100% + 14px);
+        bottom: calc(var(--iso-icon-h, 60px) + 14px);
         ${isAlignLeft ? "left: 0;" : "right: 0;"}
-        width: 300px;
+        width: 285px;
         max-width: calc(100vw - 40px);
         background: #ffffff;
         color: #1E293B;
         border-radius: 14px;
-        padding: 14px 34px 14px 16px;
-        box-shadow: 0 12px 30px -4px rgba(0, 0, 0, 0.18), 0 4px 12px rgba(0, 0, 0, 0.08);
+        padding: 12px 34px 12px 14px;
+        box-shadow: 0 10px 25px -4px rgba(0, 0, 0, 0.15), 0 4px 10px rgba(0, 0, 0, 0.06);
         border: 1px solid rgba(0, 0, 0, 0.08);
-        font-size: 13px;
+        font-size: 12.5px;
         line-height: 1.45;
         cursor: pointer;
-        z-index: 1000000;
+        z-index: 9999999;
+        display: none;
         animation: iso-callout-anim 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-        transition: transform 0.2s ease;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
       }
 
       .iso-help-callout:hover {
-        transform: translateY(-2px);
+        transform: translateY(-3px);
+        box-shadow: 0 14px 28px -4px rgba(0, 0, 0, 0.2), 0 6px 12px rgba(0, 0, 0, 0.08);
       }
 
+      /* Callout arrow pointing down towards launcher icon */
       .iso-help-callout::after {
         content: '';
         position: absolute;
-        bottom: -7px;
-        ${isAlignLeft ? "left: 32px;" : "right: 32px;"}
-        width: 14px;
-        height: 14px;
+        bottom: -6px;
+        ${isAlignLeft ? "left: 24px;" : "right: 24px;"}
+        width: 12px;
+        height: 12px;
         background: #ffffff;
         transform: rotate(45deg);
         border-right: 1px solid rgba(0, 0, 0, 0.08);
@@ -647,14 +635,16 @@
       }
 
       .iso-header-logo {
-        width: 40px;
-        height: 40px;
+        width: 38px;
+        height: 38px;
         border-radius: 50%;
         display: flex;
         align-items: center;
         justify-content: center;
         overflow: hidden;
-        background: rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.16);
+        color: #FFFFFF;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
       }
 
       .iso-header-logo img {
@@ -664,8 +654,9 @@
       }
 
       .iso-header-logo svg {
-        width: 24px;
-        height: 24px;
+        width: 22px;
+        height: 22px;
+        stroke: #FFFFFF;
       }
 
       .iso-status-indicator {
@@ -785,7 +776,9 @@
         align-items: center;
         justify-content: center;
         overflow: hidden;
-        background: #E2E8F0;
+        background: #0A2240;
+        color: #FFFFFF;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
       }
 
       .iso-msg-avatar img {
@@ -795,8 +788,9 @@
       }
 
       .iso-msg-avatar svg {
-        width: 18px;
-        height: 18px;
+        width: 16px;
+        height: 16px;
+        stroke: #FFFFFF;
       }
 
       .iso-bubble-wrapper {
@@ -902,16 +896,48 @@
         font-family: monospace;
       }
 
+      /* Modern Rounded Chat Bubble Styles */
       .iso-msg-bubble {
-        padding: 11px 15px;
-        border-radius: 14px;
+        padding: 12px 16px;
         font-size: 13.5px;
-        line-height: 1.5;
+        line-height: 1.55;
         position: relative;
         word-break: break-word;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
       }
 
-      .iso-message-bot 
+      /* Bot Message Bubble: Rounded pill with subtle bottom-left curve */
+      .iso-message-bot .iso-msg-bubble {
+        background-color: var(--iso-bot-msg-bg, #FFFFFF);
+        color: var(--iso-bot-msg-color, #1E293B);
+        border-radius: 18px 18px 18px 4px;
+        border: 1px solid #E2E8F0;
+      }
+
+      /* User Message Bubble: Rounded pill with subtle bottom-right curve */
+      .iso-message-user .iso-msg-bubble {
+        background-color: var(--iso-user-msg-bg, #0A2240);
+        color: var(--iso-user-msg-color, #FFFFFF);
+        border-radius: 18px 18px 4px 18px;
+        border: 1px solid transparent;
+      }
+
+      /* User Avatar Icon */
+      .iso-msg-avatar.iso-user-avatar {
+        background: #0A2240;
+        color: #FFFFFF;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+      }
+      .iso-msg-avatar.iso-user-avatar svg {
+        width: 15px;
+        height: 15px;
+        stroke: #FFFFFF;
+      }
+
       /* Markdown Elements inside Bot Message */
       .iso-msg-bubble .iso-table-wrapper {
         width: 100%;
@@ -1006,116 +1032,6 @@
         border-radius: 4px;
         font-size: 12px;
         font-family: monospace;
-      }
-
-      .iso-msg-bubble {
-        background-color: var(--iso-bot-msg-bg);
-        color: var(--iso-bot-msg-color);
-        border-bottom-left-radius: 3px;
-        border: 1px solid rgba(0, 0, 0, 0.04);
-      }
-
-      .iso-message-user 
-      /* Markdown Elements inside Bot Message */
-      .iso-msg-bubble .iso-table-wrapper {
-        width: 100%;
-        overflow-x: auto;
-        margin: 10px 0;
-        border-radius: 6px;
-        border: 1px solid #CBD5E1;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-      }
-      .iso-msg-bubble .iso-md-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 12px;
-        text-align: left;
-        background: #FFFFFF;
-      }
-      .iso-msg-bubble .iso-md-table th {
-        background-color: #0A2240;
-        color: #FFFFFF;
-        font-weight: 600;
-        padding: 8px 11px;
-        border-bottom: 2px solid #C5A059;
-        white-space: nowrap;
-      }
-      .iso-msg-bubble .iso-md-table td {
-        padding: 8px 11px;
-        border-bottom: 1px solid #E2E8F0;
-        color: #1E293B;
-        vertical-align: top;
-        line-height: 1.45;
-      }
-      .iso-msg-bubble .iso-md-table tr:nth-child(even) td {
-        background-color: #F8FAFC;
-      }
-      .iso-msg-bubble .iso-md-table tr:hover td {
-        background-color: #F1F5F9;
-      }
-      .iso-msg-bubble .iso-md-h2 {
-        font-size: 15px;
-        font-weight: 700;
-        color: #0A2240;
-        margin: 12px 0 6px 0;
-        padding-bottom: 4px;
-        border-bottom: 1px solid #E2E8F0;
-      }
-      .iso-msg-bubble .iso-md-h3 {
-        font-size: 14px;
-        font-weight: 600;
-        color: #0A2240;
-        margin: 10px 0 4px 0;
-      }
-      .iso-msg-bubble .iso-md-h4 {
-        font-size: 13px;
-        font-weight: 600;
-        color: #334155;
-        margin: 8px 0 3px 0;
-      }
-      .iso-msg-bubble .iso-md-ul, .iso-msg-bubble .iso-md-ol {
-        margin: 6px 0 6px 18px;
-        padding-left: 0;
-      }
-      .iso-msg-bubble .iso-md-ul li, .iso-msg-bubble .iso-md-ol li {
-        margin-bottom: 4px;
-        line-height: 1.45;
-      }
-      .iso-msg-bubble .iso-md-hr {
-        border: none;
-        border-top: 1px solid #E2E8F0;
-        margin: 12px 0;
-      }
-      .iso-msg-bubble .iso-md-link {
-        color: #C5A059;
-        text-decoration: underline;
-        font-weight: 500;
-      }
-      .iso-msg-bubble .iso-md-link:hover {
-        color: #0A2240;
-      }
-      .iso-msg-bubble .iso-md-pre {
-        background: #0F172A;
-        color: #F8FAFC;
-        padding: 9px 12px;
-        border-radius: 6px;
-        overflow-x: auto;
-        font-size: 11.5px;
-        margin: 8px 0;
-      }
-      .iso-msg-bubble .iso-md-inline-code {
-        background: rgba(10, 34, 64, 0.07);
-        color: #0A2240;
-        padding: 1px 5px;
-        border-radius: 4px;
-        font-size: 12px;
-        font-family: monospace;
-      }
-
-      .iso-msg-bubble {
-        background-color: var(--iso-user-msg-bg);
-        color: var(--iso-user-msg-color);
-        border-bottom-right-radius: 3px;
       }
 
       .iso-msg-time {
@@ -1158,10 +1074,18 @@
         background-color: rgba(0, 0, 0, 0.04);
       }
 
-      .iso-feedback-btn.iso-voted {
+      .iso-feedback-btn.iso-voted-like {
         opacity: 1;
-        background-color: rgba(0, 48, 109, 0.08);
-        border-color: rgba(0, 48, 109, 0.2);
+        background-color: #ECFDF5;
+        border-color: #A7F3D0;
+        color: #059669;
+      }
+
+      .iso-feedback-btn.iso-voted-dislike {
+        opacity: 1;
+        background-color: #FFF1F2;
+        border-color: #FECDD3;
+        color: #E11D48;
       }
 
       .iso-feedback-btn:disabled {
@@ -1565,7 +1489,8 @@
     }
 
     const headerTitle = ui.botHeaderText || config.botName || "ISO AI";
-    const headerLogo = ui.logoUrl || config.botLogo || ISO_LOGO_SVG;
+    const startImage = ui.botChatStartImage || config.botChatStartImage || ui.logoUrl || config.botLogo;
+    const headerLogo = startImage || ISO_LOGO_SVG;
 
     const closeIcon = `
       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -1777,13 +1702,19 @@
   // --------------------------------------------------------
   // END CHAT & SURVEY FLOW
   // --------------------------------------------------------
-  function handleCloseButtonClick() {
-    if (chatHistory.length > 0 && !isSessionEnded && !chatBody.querySelector(".iso-end-chat-form")) {
-      appendMessage("bot", "Before you leave, please rate your experience with us today:");
-      showEndChatForm("cross_icon");
-    } else {
+  function handleCloseButtonClick(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    if (e && e.stopPropagation) e.stopPropagation();
+
+    // If survey form is already displayed, clicking cross a 2nd time closes the window
+    if (chatBody && chatBody.querySelector(".iso-end-chat-form")) {
       finalizeCloseChat();
+      return;
     }
+
+    // Always show the end chat survey form inside the widget
+    appendMessage("bot", "Before you leave, please rate your experience with us today:");
+    showEndChatForm("cross_icon");
   }
 
   function showEndChatForm(reason = "cross_icon") {
@@ -1812,7 +1743,7 @@
 
     if (textInput) {
       textInput.disabled = true;
-      textInput.placeholder = "Chat session ending...";
+      textInput.placeholder = "Chat session ended.";
     }
     if (sendButton) {
       sendButton.disabled = true;
@@ -1905,29 +1836,35 @@
   }
 
   // --------------------------------------------------------
-  // 9. IDLE STATE INACTIVITY MONITORING
+  // 9. IDLE STATE INACTIVITY MONITORING (20-MIN AUTO-END)
   // --------------------------------------------------------
+  const MAX_INACTIVITY_TIMEOUT_SECONDS = 20 * 60; // 20 minutes
+
   function startIdleMonitoring() {
     if (idleCheckInterval) clearInterval(idleCheckInterval);
     idleCheckInterval = setInterval(() => {
       if (!isChatOpen || isSessionEnded) return;
 
-      const idleConfigs = (config.botUIConfigs && config.botUIConfigs.idleStatMessages) || [];
-      if (!idleConfigs || idleConfigs.length === 0) return;
-
       idleSeconds++;
 
-      for (let i = idleMessagesSentCount; i < idleConfigs.length; i++) {
-        const threshold = parseMongoNumber(idleConfigs[i].time, 0);
-        if (threshold > 0 && idleSeconds >= threshold) {
-          appendMessage("bot", idleConfigs[i].message);
-          idleMessagesSentCount = i + 1;
-
-          if (idleMessagesSentCount >= idleConfigs.length) {
-            endChatSession();
+      // Nudge messages configured in botUIConfigs
+      const idleConfigs = (config.botUIConfigs && config.botUIConfigs.idleStatMessages) || [];
+      if (idleConfigs && idleConfigs.length > 0) {
+        for (let i = idleMessagesSentCount; i < idleConfigs.length; i++) {
+          const threshold = parseMongoNumber(idleConfigs[i].time, 0);
+          if (threshold > 0 && idleSeconds >= threshold) {
+            appendMessage("bot", idleConfigs[i].message);
+            idleMessagesSentCount = i + 1;
+            break;
           }
-          break;
         }
+      }
+
+      // 20-minute inactivity limit: automatically end the chat session
+      if (idleSeconds >= MAX_INACTIVITY_TIMEOUT_SECONDS) {
+        appendMessage("bot", "This chat session has automatically ended after 20 minutes of inactivity.");
+        showEndChatForm("inactivity_timeout");
+        endChatSession("inactivity_20m");
       }
     }, 1000);
   }
@@ -1936,8 +1873,25 @@
     idleSeconds = 0;
   }
 
-  function endChatSession() {
+  function endChatSession(reason = "inactivity") {
+    if (isSessionEnded) return;
     isSessionEnded = true;
+
+    // Send session-end event to backend
+    const currentSessionId = sessionStorage.getItem("iso_chat_session_id");
+    if (currentSessionId) {
+      fetch(config.chatApiUrl ? config.chatApiUrl.replace(/\/chat\/?$/, "/chat/session-end") : DEFAULT_CHAT_API_URL.replace(/\/chat\/?$/, "/chat/session-end"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: currentSessionId,
+          tenantId: config.tenantId || "onestop",
+          botId: config.botId || "isobot",
+          formData: { status: "Ended_Auto_Inactivity_20m" }
+        })
+      }).catch(() => {});
+    }
+
     if (textInput) {
       textInput.disabled = true;
       textInput.placeholder = "Chat session ended due to inactivity.";
@@ -1947,7 +1901,7 @@
     const banner = document.createElement("div");
     banner.className = "iso-session-ended";
     banner.innerHTML = `
-      <div style="font-size:12px; color:#64748B;">This session has timed out.</div>
+      <div style="font-size:12px; color:#64748B;">This session has timed out after 20 minutes.</div>
       <button class="iso-restart-btn">Restart Chat</button>
     `;
     banner.querySelector(".iso-restart-btn").addEventListener("click", () => {
@@ -2105,9 +2059,19 @@
     const timestamp = timestampStr || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     const ui = config.botUIConfigs || {};
+    const botStartImg = ui.botChatStartImage || config.botChatStartImage || ui.logoUrl || config.botLogo;
     let avatarHtml = "";
     if (sender === "bot") {
-      avatarHtml = `<div class="iso-msg-avatar">${renderLogoHtml(ui.logoUrl, config.botName)}</div>`;
+      avatarHtml = `<div class="iso-msg-avatar" title="${config.botName || 'ISO Bot'}">${renderLogoHtml(botStartImg, config.botName)}</div>`;
+    } else if (sender === "user") {
+      avatarHtml = `
+        <div class="iso-msg-avatar iso-user-avatar" title="You">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+            <circle cx="12" cy="7" r="4"></circle>
+          </svg>
+        </div>
+      `;
     }
 
     let processedText = "";
@@ -2119,7 +2083,7 @@
 
     // Feedback Thumbs Up / Down row
     let feedbackHtml = "";
-    if (sender === "bot" && ui.showThumbUpDownFeedbackform) {
+    if (sender === "bot" && ui.showThumbUpDownFeedbackform !== false) {
       feedbackHtml = `
         <div class="iso-feedback-row">
           <button class="iso-feedback-btn iso-like-btn" title="Helpful" aria-label="Like response">
@@ -2145,26 +2109,55 @@
     `;
 
     // Bind feedback button events
-    if (sender === "bot" && ui.showThumbUpDownFeedbackform) {
+    if (sender === "bot" && ui.showThumbUpDownFeedbackform !== false) {
       const likeBtn = messageEl.querySelector(".iso-like-btn");
       const dislikeBtn = messageEl.querySelector(".iso-dislike-btn");
       const note = messageEl.querySelector(".iso-feedback-note");
 
-      likeBtn.addEventListener("click", () => {
-        likeBtn.classList.add("iso-voted");
-        dislikeBtn.classList.remove("iso-voted");
-        likeBtn.disabled = true;
-        dislikeBtn.disabled = true;
-        note.textContent = "Thank you!";
-      });
+      const submitFeedbackPayload = (type) => {
+        const currentSessionId = sessionStorage.getItem("iso_chat_session_id") || getOrCreateSessionId();
+        const baseEndpoint = config.chatApiUrl || config.apiEndpoint || DEFAULT_CHAT_API_URL;
+        const feedbackEndpoint = baseEndpoint.replace(/\/chat\/?$/, "/chat/feedback");
 
-      dislikeBtn.addEventListener("click", () => {
-        dislikeBtn.classList.add("iso-voted");
-        likeBtn.classList.remove("iso-voted");
-        likeBtn.disabled = true;
-        dislikeBtn.disabled = true;
-        note.textContent = "Feedback received.";
-      });
+        fetch(feedbackEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: currentSessionId,
+            tenantId: config.tenantId || "onestop",
+            botId: config.botId || "isobot",
+            type: type,
+            response: typeof text === "string" ? text.slice(0, 300) : "",
+            messageId: msgId
+          })
+        }).catch(() => {});
+      };
+
+      if (likeBtn) {
+        likeBtn.addEventListener("click", () => {
+          likeBtn.classList.add("iso-voted", "iso-voted-like");
+          if (dislikeBtn) {
+            dislikeBtn.classList.remove("iso-voted", "iso-voted-dislike");
+            dislikeBtn.disabled = true;
+          }
+          likeBtn.disabled = true;
+          if (note) note.textContent = "Thank you for the feedback! 👍";
+          submitFeedbackPayload("like");
+        });
+      }
+
+      if (dislikeBtn) {
+        dislikeBtn.addEventListener("click", () => {
+          dislikeBtn.classList.add("iso-voted", "iso-voted-dislike");
+          if (likeBtn) {
+            likeBtn.classList.remove("iso-voted", "iso-voted-like");
+            likeBtn.disabled = true;
+          }
+          dislikeBtn.disabled = true;
+          if (note) note.textContent = "Feedback recorded. 👎";
+          submitFeedbackPayload("dislike");
+        });
+      }
     }
 
     chatBody.appendChild(messageEl);
@@ -2224,9 +2217,10 @@
     const indicator = document.createElement("div");
     indicator.className = "iso-message iso-message-bot iso-typing-container";
     const ui = config.botUIConfigs || {};
+    const botStartImg = ui.botChatStartImage || config.botChatStartImage || ui.logoUrl || config.botLogo;
 
     indicator.innerHTML = `
-      <div class="iso-msg-avatar">${renderLogoHtml(ui.logoUrl, config.botName)}</div>
+      <div class="iso-msg-avatar" title="${config.botName || 'ISO Bot'}">${renderLogoHtml(botStartImg, config.botName)}</div>
       <div class="iso-typing-indicator">
         <div class="iso-typing-dot"></div>
         <div class="iso-typing-dot"></div>
@@ -2751,8 +2745,9 @@
 
     // 2. Header logo
     const logoEl = widgetContainer.querySelector(".iso-header-logo");
-    if (logoEl && (ui.logoUrl || config.botLogo)) {
-      logoEl.innerHTML = renderLogoHtml(ui.logoUrl || config.botLogo, ui.botHeaderText || config.botName);
+    const startImgUrl = ui.botChatStartImage || config.botChatStartImage || ui.logoUrl || config.botLogo;
+    if (logoEl && startImgUrl) {
+      logoEl.innerHTML = renderLogoHtml(startImgUrl, ui.botHeaderText || config.botName);
     }
 
     // 3. Toggle button launcher image
@@ -2770,6 +2765,13 @@
     const hasUserMessages = chatHistory.some(m => m.sender === "user");
     if (!hasUserMessages && isChatOpen) {
       renderWelcomeMessages();
+    }
+
+    // 6. Help notification popup
+    if (helpNotificationEl && ui.helpNotificationRenderMsg) {
+      const contentEl = helpNotificationEl.querySelector(".iso-callout-content");
+      if (contentEl) contentEl.textContent = ui.helpNotificationRenderMsg;
+      initHelpNotification();
     }
   }
 

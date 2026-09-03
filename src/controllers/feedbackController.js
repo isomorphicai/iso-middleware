@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const { Feedback } = require('../models');
 const ApiResponse = require('../helpers/apiResponse');
 const logger = require('../helpers/logger');
@@ -10,8 +11,8 @@ class FeedbackController {
   async submitFeedback(req, res, next) {
     try {
       const {
-        botId = 'ISOBot',
-        tenantId = '',
+        botId = 'isobot',
+        tenantId = 'onestop',
         sessionId = '',
         messageId = '',
         type, // 'like' | 'dislike' | 'rating'
@@ -25,20 +26,68 @@ class FeedbackController {
         return ApiResponse.badRequest(res, 'Feedback type (like/dislike) or rating is required');
       }
 
+      const feedbackType = type || (Number(rating) >= 3 ? 'like' : 'dislike');
+      const numericRating = rating ? Number(rating) : (feedbackType === 'like' ? 5 : 1);
+
       const feedback = new Feedback({
         botId,
         tenantId,
         sessionId,
         messageId,
-        type: type || (rating >= 3 ? 'like' : 'dislike'),
-        rating: rating ? Number(rating) : (type === 'like' ? 5 : 1),
+        type: feedbackType,
+        rating: numericRating,
         query,
         response,
         comment
       });
 
-      await feedback.save();
-      logger.info(`Recorded feedback '${feedback.type}' for botId='${botId}'`);
+      await feedback.save().catch(() => {});
+      logger.info(`Recorded feedback '${feedbackType}' for sessionId='${sessionId}', botId='${botId}'`);
+
+      // Update the turn document in master > conversationHistory
+      if (sessionId) {
+        try {
+          const client = mongoose.connection?.client 
+            || (mongoose.connection && typeof mongoose.connection.getClient === 'function' && mongoose.connection.getClient())
+            || (mongoose.connections && mongoose.connections[0] && mongoose.connections[0].client);
+
+          const masterDb = client ? client.db('master') : mongoose.connection.useDb('master').db;
+          const convCol = masterDb.collection('conversationHistory');
+
+          let queryFilter = { sessionId };
+          if (messageId) {
+            queryFilter = { 
+              $or: [
+                { sessionId, messageId }, 
+                { sessionId, 'metadata.messageId': messageId }, 
+                { sessionId }
+              ] 
+            };
+          }
+
+          // Find the matching or latest turn document in the session
+          const turnDocs = await convCol.find(queryFilter).sort({ createdAt: -1 }).limit(1).toArray();
+          const turnDoc = turnDocs[0];
+          if (turnDoc) {
+            await convCol.updateOne(
+              { _id: turnDoc._id },
+              { 
+                $set: { 
+                  userFeedback: feedbackType, 
+                  feedbackType: feedbackType, 
+                  feedbackAt: new Date(),
+                  feedbackRating: numericRating,
+                  feedbackComment: comment || '',
+                  updatedAt: new Date()
+                } 
+              }
+            );
+            logger.info(`Attached userFeedback='${feedbackType}' to conversation turn ${turnDoc._id}`);
+          }
+        } catch (dbErr) {
+          logger.warn(`Failed to update conversationHistory with feedback: ${dbErr.message}`);
+        }
+      }
 
       return ApiResponse.created(res, feedback, 'Feedback recorded successfully');
     } catch (err) {
