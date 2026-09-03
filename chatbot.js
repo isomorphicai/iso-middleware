@@ -406,7 +406,12 @@
     const iconWidth = normalizeUnit(ui.chatIconWidth, "90px");
     const iconHeight = normalizeUnit(ui.chatIconHeight, "90px");
     const mobileIconWidth = normalizeUnit(ui.chatMobileIconWidth, "70px");
-    const mobileIconHeight = normalizeUnit(ui.chatMobileIconHeight, "70px");
+    const headerTextColor = ui.botHeaderTextColor || ui.headerTextColor || ui.headerFontColor || "#FFFFFF";
+    const headerIconColor = ui.botHeaderIconColor || ui.headerIconColor || "#FFFFFF";
+    const headerStatusColor = ui.botHeaderStatusColor || ui.headerStatusColor || "rgba(255, 255, 255, 0.75)";
+    const avatarIconColor = ui.botAvatarIconColor || ui.avatarIconColor || "#FFFFFF";
+    const avatarBg = ui.botAvatarBg || ui.botThemeColor || "#0A2240";
+    const launcherIconColor = ui.launcherIconColor || ui.chatIconColor || "#FFFFFF";
 
     const submitBtnDisplay = ui.botChatSubmitButton === true ? "flex" : (ui.botChatSubmitButton === false ? "none" : "flex");
 
@@ -418,6 +423,12 @@
         --iso-bot-msg-color: ${botMsgColor};
         --iso-user-msg-bg: ${userMsgBg};
         --iso-user-msg-color: ${userMsgColor};
+        --iso-header-text-color: ${headerTextColor};
+        --iso-header-icon-color: ${headerIconColor};
+        --iso-header-status-color: ${headerStatusColor};
+        --iso-avatar-icon-color: ${avatarIconColor};
+        --iso-avatar-bg: ${avatarBg};
+        --iso-launcher-icon-color: ${launcherIconColor};
         --iso-font: "Inter", "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
         --iso-pos-bottom: ${posBottom};
         --iso-pos-top: ${posTop};
@@ -559,7 +570,8 @@
       .iso-chat-icon {
         width: 50%;
         height: 50%;
-        color: #ffffff;
+        color: var(--iso-launcher-icon-color);
+        stroke: var(--iso-launcher-icon-color);
         transition: transform 0.3s ease, opacity 0.25s ease;
       }
 
@@ -567,7 +579,8 @@
         position: absolute;
         width: 40%;
         height: 40%;
-        color: #ffffff;
+        color: var(--iso-launcher-icon-color);
+        stroke: var(--iso-launcher-icon-color);
         opacity: 0;
         transform: rotate(-90deg) scale(0.5);
         transition: transform 0.3s ease, opacity 0.25s ease;
@@ -656,7 +669,7 @@
       .iso-header-logo svg {
         width: 22px;
         height: 22px;
-        stroke: #FFFFFF;
+        stroke: var(--iso-header-icon-color);
       }
 
       .iso-status-indicator {
@@ -678,13 +691,13 @@
       .iso-bot-name {
         font-weight: 600;
         font-size: 15px;
-        color: #ffffff;
+        color: var(--iso-header-text-color);
         letter-spacing: -0.2px;
       }
 
       .iso-bot-status {
         font-size: 11px;
-        color: rgba(255, 255, 255, 0.75);
+        color: var(--iso-header-status-color);
         display: flex;
         align-items: center;
         gap: 5px;
@@ -707,19 +720,20 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        color: rgba(255, 255, 255, 0.8);
+        color: var(--iso-header-icon-color);
         transition: background-color 0.2s, color 0.2s;
         text-decoration: none;
       }
 
       .iso-header-btn:hover {
         background-color: rgba(255, 255, 255, 0.15);
-        color: #ffffff;
+        color: var(--iso-header-text-color);
       }
 
       .iso-header-btn svg {
         width: 18px;
         height: 18px;
+        stroke: var(--iso-header-icon-color);
       }
 
       /* Body */
@@ -729,31 +743,19 @@
         overflow-y: auto;
         display: flex;
         flex-direction: column;
-        gap: 14px;
-        background-color: ${ui.demoBackgroundUrl ? "transparent" : "#F8FAFC"};
-        ${ui.demoBackgroundUrl ? `background-image: url(${ui.demoBackgroundUrl}); background-size: cover; background-position: center;` : ""}
-        scroll-behavior: smooth;
+        gap: 12px;
+        background-color: var(--iso-bg);
       }
 
-      .iso-body::-webkit-scrollbar {
-        width: 5px;
-      }
-      .iso-body::-webkit-scrollbar-thumb {
-        background: rgba(0, 0, 0, 0.12);
-        border-radius: 3px;
-      }
-
-      /* Message Items */
+      /* Messages */
       .iso-message {
         display: flex;
-        gap: 10px;
-        max-width: 88%;
-        opacity: 0;
-        transform: translateY(6px);
-        animation: iso-fade-in-up 0.25s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+        gap: 8px;
+        max-width: 86%;
+        animation: iso-msg-appear 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
       }
 
-      @keyframes iso-fade-in-up {
+      @keyframes iso-msg-appear {
         to { opacity: 1; transform: translateY(0); }
       }
 
@@ -776,8 +778,8 @@
         align-items: center;
         justify-content: center;
         overflow: hidden;
-        background: #0A2240;
-        color: #FFFFFF;
+        background: var(--iso-avatar-bg);
+        color: var(--iso-avatar-icon-color);
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
       }
 
@@ -790,7 +792,7 @@
       .iso-msg-avatar svg {
         width: 16px;
         height: 16px;
-        stroke: #FFFFFF;
+        stroke: var(--iso-avatar-icon-color);
       }
 
       .iso-bubble-wrapper {
@@ -2736,6 +2738,9 @@
   function updateDOMWithNewConfig() {
     if (!widgetContainer) return;
     const ui = config.botUIConfigs || {};
+
+    // 0. Update CSS custom properties
+    injectStyles();
 
     // 1. Header title
     const nameEl = widgetContainer.querySelector(".iso-bot-name");
