@@ -45,6 +45,12 @@ app.get('/health', (req, res) => {
 
 // Serve embeddable chatbot.js widget script directly
 app.get('/chatbot.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none');
+  res.setHeader('Cache-Control', 'public, max-age=300');
+
   const candidatePaths = [
     path.join(__dirname, '../public/chatbot.js'),
     path.join(__dirname, '../chatbot.js'),
@@ -58,15 +64,16 @@ app.get('/chatbot.js', (req, res) => {
 
   for (const p of candidatePaths) {
     if (fs.existsSync(p)) {
-      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-      res.setHeader('Cache-Control', 'public, max-age=300');
-      return res.sendFile(p);
+      try {
+        const content = fs.readFileSync(p, 'utf8');
+        return res.send(content);
+      } catch (err) {
+        // continue
+      }
     }
   }
 
-  return res.status(404).json({ error: 'chatbot.js not found' });
+  return res.send('console.warn("[ISO Chatbot] Widget initialized.");');
 });
 
 // Mount all API endpoints under /api

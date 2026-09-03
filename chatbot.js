@@ -12,9 +12,10 @@
   if (window.IsoChatbotInitialized) return;
   window.IsoChatbotInitialized = true;
 
-  // Default API Endpoints (points to iso-middleware on port 5000)
-  const DEFAULT_CONFIG_API_URL = "http://localhost:5000/api/bot-config";
-  const DEFAULT_CHAT_API_URL = "http://localhost:5000/api/chat";
+  // Default API Endpoints (points to live hosted Render middleware)
+  const HOSTED_MIDDLEWARE_URL = "https://iso-middleware-1epx.onrender.com";
+  const DEFAULT_CONFIG_API_URL = `${HOSTED_MIDDLEWARE_URL}/api/bot-config`;
+  const DEFAULT_CHAT_API_URL = `${HOSTED_MIDDLEWARE_URL}/api/chat`;
 
   // Isometric SVG Logo
   const ISO_LOGO_SVG = `
