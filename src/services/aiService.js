@@ -1,153 +1,146 @@
-const env = require('../config/env');
+const intentService = require('./intentService');
+const queryRewriterService = require('./queryRewriterService');
+const ragSearchService = require('./ragSearchService');
+const llmService = require('./llmService');
 const logger = require('../helpers/logger');
-const { buildSystemPrompt, formatMessagesForLLM } = require('../helpers/promptBuilder');
 
 class AIService {
   /**
-   * Main entrypoint to generate chat response
+   * Main entrypoint to process chat queries through Intent Classification,
+   * Query Rewriter, KNN Vector Search, and Groq/LLM generation.
    */
-  async generateResponse({ bot, query, history = [], tenantId = '' }) {
+  async generateResponse({ bot, query, history = [], tenantId = '', botId = '' }) {
     const startTime = Date.now();
-    const systemPrompt = buildSystemPrompt(bot, bot?.ingestionSources || []);
-    
-    // Check if OpenAI API key is configured
-    if (env.OPENAI_API_KEY) {
-      try {
-        const response = await this.callOpenAI({
-          apiKey: env.OPENAI_API_KEY,
-          model: bot?.model || env.OPENAI_MODEL,
-          temperature: bot?.temperature || 0.7,
-          messages: formatMessagesForLLM(systemPrompt, history, query)
-        });
-        
-        const latencyMs = Date.now() - startTime;
-        return {
-          text: response.content,
-          tokens: response.tokens,
-          latencyMs,
-          model: bot?.model || env.OPENAI_MODEL,
-          provider: 'openai'
-        };
-      } catch (err) {
-        logger.warn(`OpenAI API failed, falling back to local engine: ${err.message}`);
-      }
+    const resolvedBotId = botId || (bot && (bot.botId || bot.code || bot._id?.toString())) || 'ISOBot';
+    const resolvedTenantId = tenantId || (bot && (bot.tenantId || bot.tenantName)) || 'default';
+
+    logger.info(`[AI Service] Processing query for tenant "${resolvedTenantId}", bot "${resolvedBotId}": "${query}"`);
+
+    // =========================================================================
+    // STEP 1: INTENT CLASSIFICATION
+    // =========================================================================
+    const classification = await intentService.classifyIntent({
+      query,
+      history,
+      bot
+    });
+
+    logger.info(`[AI Service] Intent detected: "${classification.intent}" (${classification.reason || 'N/A'})`);
+
+    // 1A. Smalltalk Handler (Direct LLM Response)
+    if (classification.intent === 'smalltalk') {
+      const smalltalkRes = await intentService.handleSmalltalk({ query, bot, history });
+      const latencyMs = Date.now() - startTime;
+      return {
+        text: smalltalkRes.text,
+        intent: 'smalltalk',
+        retrievedChunks: [],
+        sources: [],
+        tokens: smalltalkRes.tokens || { prompt: 20, completion: 30 },
+        latencyMs,
+        model: smalltalkRes.model || bot?.model || 'openai/gpt-oss-120b',
+        provider: 'groq/llm'
+      };
     }
 
-    // Default intelligent local responder
-    const fallbackResponse = this.generateIntelligentFallback(bot, query);
+    // 1B. Ambiguous Query Handler (Ask for Clarification)
+    if (classification.intent === 'ambiguous') {
+      const ambiguousRes = await intentService.handleAmbiguousQuery({ query, bot, history });
+      const latencyMs = Date.now() - startTime;
+      return {
+        text: ambiguousRes.text,
+        intent: 'ambiguous',
+        retrievedChunks: [],
+        sources: [],
+        tokens: ambiguousRes.tokens || { prompt: 20, completion: 40 },
+        latencyMs,
+        model: ambiguousRes.model || bot?.model || 'openai/gpt-oss-120b',
+        provider: 'groq/llm'
+      };
+    }
+
+    // =========================================================================
+    // STEP 2: QUERY REWRITER & EXPANSION
+    // =========================================================================
+    const expandedQueries = await queryRewriterService.rewriteAndExpandQuery({
+      query,
+      history,
+      bot
+    });
+    logger.info(`[AI Service] Expanded queries for KNN: ${JSON.stringify(expandedQueries)}`);
+
+    // =========================================================================
+    // STEP 3: KNN VECTOR RAG SEARCH ON INDEX PARTITION ${tenantId}_${botId}
+    // =========================================================================
+    const retrievedChunks = await ragSearchService.performKnnSearch({
+      queries: expandedQueries,
+      tenantId: resolvedTenantId,
+      botId: resolvedBotId,
+      topK: 4,
+      scoreThreshold: 0.05
+    });
+
+    // =========================================================================
+    // STEP 4: PROMPT ASSEMBLY & GROQ / LLM GENERATION
+    // =========================================================================
+    const botName = bot?.botName || bot?.name || 'ISO AI Assistant';
+    const basePersona = bot?.systemPrompt || `You are ${botName}, a friendly, intelligent, and concise enterprise AI chatbot assistant.`;
+
+    let contextSection = '';
+    const uniqueSources = [];
+
+    if (retrievedChunks.length > 0) {
+      contextSection = `\n\n=== RETRIEVED KNOWLEDGE BASE DOCUMENTS ===\n` +
+        retrievedChunks.map((c, i) => {
+          if (c.sourceUrl && !uniqueSources.includes(c.sourceUrl)) {
+            uniqueSources.push(c.sourceUrl);
+          }
+          return `[Document ${i + 1} - Title: ${c.title} (Source: ${c.sourceUrl || 'Internal'})]\n${c.text}`;
+        }).join('\n\n') +
+        `\n===========================================\n`;
+    }
+
+    const formattingInstructions = `
+CHATBOT FORMATTING & STYLE RULES:
+1. **Be Short & Crisp**: Answer in 2 to 4 concise bullet points or 1-2 short paragraphs. Avoid long walls of text or unnecessary essays.
+2. **Formatting**:
+   - Use **bold** for key concepts and product/feature names.
+   - Use clean bullet points (• or -) for multiple items, steps, or features.
+   - Include markdown links like [Website Title](url) when referring to source documents.
+3. **Accuracy**: Base your answer on the knowledge documents above when available. If the answer is not in the documents, state what you know concisely and suggest contacting support.
+4. **Tone**: Warm, helpful, and conversational like a professional customer support chatbot.`;
+
+    const messages = [
+      {
+        role: 'system',
+        content: `${basePersona}${contextSection}\n${formattingInstructions}`
+      },
+      ...history.slice(-4),
+      {
+        role: 'user',
+        content: query
+      }
+    ];
+
+    const llmResult = await llmService.chatCompletion({
+      messages,
+      temperature: 0.3,
+      maxTokens: 350,
+      model: bot?.model
+    });
+
     const latencyMs = Date.now() - startTime;
 
     return {
-      text: fallbackResponse.text,
-      form: fallbackResponse.form,
-      quickReplies: fallbackResponse.quickReplies,
-      tokens: { prompt: query.length / 4, completion: fallbackResponse.text.length / 4 },
+      text: llmResult.content,
+      intent: 'information_seeking',
+      retrievedChunksCount: retrievedChunks.length,
+      retrievedChunks,
+      sources: uniqueSources,
+      tokens: llmResult.tokens || { prompt: query.length / 4, completion: llmResult.content.length / 4 },
       latencyMs,
-      model: bot?.model || 'iso-local-engine',
-      provider: 'iso-engine'
-    };
-  }
-
-  /**
-   * Call OpenAI API using native fetch (Node.js 18+)
-   */
-  async callOpenAI({ apiKey, model, temperature, messages }) {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: model.includes('claude') ? 'gpt-4o-mini' : model, // Fallback to compatible model if configured model isn't OpenAI
-        temperature,
-        messages
-      })
-    });
-
-    if (!response.ok) {
-      const errBody = await response.text();
-      throw new Error(`OpenAI API returned status ${response.status}: ${errBody}`);
-    }
-
-    const data = await response.json();
-    return {
-      content: data.choices?.[0]?.message?.content || 'No response generated.',
-      tokens: {
-        prompt: data.usage?.prompt_tokens || 0,
-        completion: data.usage?.completion_tokens || 0
-      }
-    };
-  }
-
-  /**
-   * Intelligent local fallback engine
-   * Matches intents, system instructions, and knowledge sources
-   */
-  generateIntelligentFallback(bot, query) {
-    const botName = bot?.name || 'ISO AI';
-    const qLower = query.toLowerCase().trim();
-
-    // Check for call transfer / live agent requests
-    if (qLower.includes('human') || qLower.includes('transfer') || qLower.includes('live agent') || qLower.includes('representative') || qLower.includes('call me')) {
-      return {
-        text: `I'd be glad to connect you with one of our support representatives. Please fill out the quick transfer form below:`,
-        form: 'transferCall',
-        quickReplies: ['Cancel request', 'Help with something else']
-      };
-    }
-
-    // Check for survey / feedback requests
-    if (qLower.includes('survey') || qLower.includes('give feedback') || qLower.includes('review')) {
-      return {
-        text: `We would love to hear your thoughts! Please complete our quick survey below:`,
-        form: 'survey',
-        quickReplies: ['Done', 'Contact support']
-      };
-    }
-
-    // Greetings
-    if (/^(hi|hello|hey|good morning|good afternoon|greetings)/i.test(qLower)) {
-      return {
-        text: `Hello! I'm ${botName}. How can I assist you today?`,
-        quickReplies: ['Check documentation', 'Contact support', 'What services are offered?']
-      };
-    }
-
-    // Knowledge source queries
-    if (bot?.ingestionSources && bot.ingestionSources.length > 0) {
-      const matchedSource = bot.ingestionSources.find(s => 
-        qLower.includes(s.name.toLowerCase().split('.')[0]) ||
-        (s.content && s.content.toLowerCase().includes(qLower))
-      );
-      if (matchedSource) {
-        return {
-          text: `Based on **${matchedSource.name}**, here is the relevant information to address your question. If you need more specifics, feel free to ask!`,
-          quickReplies: ['Tell me more', 'I have another question']
-        };
-      }
-    }
-
-    // Common query intents
-    if (qLower.includes('password') || qLower.includes('reset')) {
-      return {
-        text: `To reset your credentials, visit the account settings portal and select "Forgot Password". A secure verification link will be sent to your registered email.`,
-        quickReplies: ['Didn’t receive email', 'Contact admin']
-      };
-    }
-
-    if (qLower.includes('help') || qLower.includes('support')) {
-      return {
-        text: `I can assist with account setup, navigation, documentation lookups, and troubleshooting. You can also request a live agent transfer at any time.`,
-        quickReplies: ['Transfer to agent', 'View docs', 'Ask another question']
-      };
-    }
-
-    // System prompt contextual response
-    const snippet = bot?.systemPrompt ? bot.systemPrompt.slice(0, 120) : 'helpful AI assistant';
-    return {
-      text: `Thank you for your message. As ${botName}, I have processed your inquiry ("${query}"). Let me know how else I can assist!`,
-      quickReplies: ['Tell me more', 'Request representative']
+      model: llmResult.model,
+      provider: llmResult.provider
     };
   }
 }

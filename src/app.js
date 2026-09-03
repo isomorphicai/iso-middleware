@@ -44,6 +44,14 @@ app.get('/health', (req, res) => {
 // Mount all API endpoints under /api
 app.use('/api', apiRoutes);
 
+// Serve embeddable chatbot.js widget script directly
+app.get('/chatbot.js', (req, res) => {
+  const chatbotPath = path.join(__dirname, '../../chat/chatbot.js');
+  res.setHeader('Content-Type', 'application/javascript');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.sendFile(chatbotPath);
+});
+
 // Serve static assets from portal client build folder if present
 const path = require('path');
 const fs = require('fs');

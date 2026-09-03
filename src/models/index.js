@@ -1,6 +1,7 @@
 const Tenant = require('./Tenant');
 const Bot = require('./Bot');
 const Conversation = require('./Conversation');
+const ConversationHistory = require('./ConversationHistory');
 const Feedback = require('./Feedback');
 const FormSubmission = require('./FormSubmission');
 const Analytics = require('./Analytics');
@@ -11,6 +12,7 @@ module.exports = {
   Tenant,
   Bot,
   Conversation,
+  ConversationHistory,
   Feedback,
   FormSubmission,
   Analytics,

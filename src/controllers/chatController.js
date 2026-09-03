@@ -8,14 +8,16 @@ const logger = require('../helpers/logger');
 class ChatController {
   /**
    * POST /api/chat
-   * Primary chat query endpoint for chatbot.js widget
+   * Primary chat query endpoint for chatbot.js widget & portal playground
    */
   async handleChat(req, res, next) {
+    const queryReceivedAt = new Date();
+
     try {
       const {
         query,
         message,
-        botId = 'ISOBot',
+        botId = 'isobot',
         tenantId = '',
         history = [],
         sessionId
@@ -31,7 +33,7 @@ class ChatController {
 
       // Check if bot is disabled
       if (bot && bot.status === 'inactive') {
-        const botName = bot.name || 'ISO AI';
+        const botName = bot.name || bot.botName || 'ISO AI';
         return res.json({
           response: `The bot "${botName}" is currently offline or inactive. Please contact support.`,
           reply: `The bot "${botName}" is currently offline or inactive. Please contact support.`,
@@ -41,20 +43,22 @@ class ChatController {
         });
       }
 
-      // 2. Generate Response
+      // 2. Generate Response with Intent Classification & RAG KNN Vector Search
       const result = await aiService.generateResponse({
         bot,
         query: userText.trim(),
         history,
-        tenantId
+        tenantId,
+        botId
       });
 
-      const botName = bot?.name || 'ISO AI Assistant';
+      const responseGivenAt = new Date();
+      const botName = bot?.botName || bot?.name || 'ISO Bot';
 
-      // 3. Persist Exchange in Background
-      const resolvedSessionId = sessionId || `session_${Date.now()}`;
-      const resolvedBotId = (bot && (bot.botId || bot.code || bot._id?.toString())) || botId || 'ISOBot';
-      const resolvedTenantId = tenantId || (bot && (bot.tenantId || bot.tenantName)) || 'default';
+      // 3. Persist Exchange to master > conversationHistory
+      const resolvedSessionId = sessionId || `sess_${Date.now()}_${Math.random().toString(36).substr(2, 7)}`;
+      const resolvedBotId = (bot && (bot.botId || bot.code || bot._id?.toString())) || botId || 'isobot';
+      const resolvedTenantId = tenantId || (bot && (bot.tenantId || bot.tenantName)) || 'onestop';
 
       conversationService.recordExchange({
         sessionId: resolvedSessionId,
@@ -64,14 +68,20 @@ class ChatController {
         botResponse: result.text,
         metadata: {
           model: result.model,
+          provider: result.provider,
           tokens: result.tokens,
-          latencyMs: result.latencyMs
+          latencyMs: result.latencyMs,
+          intent: result.intent,
+          sources: result.sources,
+          retrievedChunksCount: result.retrievedChunksCount
         },
         clientInfo: {
           ip: req.ip,
-          userAgent: req.get('user-agent'),
-          referer: req.get('referer')
-        }
+          userAgent: req.get('user-agent') || '',
+          referer: req.get('referer') || ''
+        },
+        queryReceivedAt,
+        responseGivenAt
       }).catch(e => logger.error('Async conversation log error:', e));
 
       // 4. Record Analytics in Background
@@ -84,7 +94,6 @@ class ChatController {
       }).catch(e => logger.error('Async analytics log error:', e));
 
       // 5. Return chatbot.js compatible response payload
-      // chatbot.js looks for data.response || data.reply || data.message || data.answer
       return res.json({
         response: result.text,
         reply: result.text,
@@ -92,9 +101,41 @@ class ChatController {
         botName,
         form: result.form || null,
         quickReplies: result.quickReplies || bot?.quickReplies || [],
+        intent: result.intent || 'information_seeking',
+        sources: result.sources || [],
+        retrievedChunksCount: result.retrievedChunksCount || 0,
         sessionId: resolvedSessionId,
         latencyMs: result.latencyMs,
-        timestamp: new Date().toISOString()
+        timestamp: responseGivenAt.toISOString()
+      });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /**
+   * POST /api/chat/session-end
+   * Ends a conversation session and stamps sessionEndAt
+   */
+  async handleEndSession(req, res, next) {
+    try {
+      const { sessionId, tenantId, botId, rating, feedback, formData } = req.body;
+      if (!sessionId) {
+        return ApiResponse.badRequest(res, 'sessionId is required to end session');
+      }
+
+      const result = await conversationService.endSession({
+        sessionId,
+        tenantId,
+        botId,
+        rating,
+        feedback,
+        formData: formData || req.body
+      });
+
+      return ApiResponse.success(res, {
+        message: 'Chat session successfully ended and archived.',
+        ...result
       });
     } catch (err) {
       next(err);
@@ -107,13 +148,12 @@ class ChatController {
    */
   async streamChat(req, res, next) {
     try {
-      const { query, message, botId = 'ISOBot', tenantId = '', history = [] } = req.body;
+      const { query, message, botId = 'isobot', tenantId = '', history = [] } = req.body;
       const userText = query || message;
       if (!userText) {
         return ApiResponse.badRequest(res, 'Message text is required');
       }
 
-      // Setup SSE headers
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
@@ -127,16 +167,13 @@ class ChatController {
         tenantId
       });
 
-      // Stream words with small delays to simulate realistic typing
       const words = result.text.split(' ');
       for (let i = 0; i < words.length; i++) {
         const chunk = (i === 0 ? '' : ' ') + words[i];
         res.write(`data: ${JSON.stringify({ chunk, done: false })}\n\n`);
-        // Small interval
         await new Promise(r => setTimeout(r, 25));
       }
 
-      // Finish event
       res.write(`data: ${JSON.stringify({ done: true, fullText: result.text, form: result.form })}\n\n`);
       res.end();
     } catch (err) {

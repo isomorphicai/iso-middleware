@@ -39,4 +39,9 @@ router.post('/admin/tenant-users', (req, res, next) => adminController.createTen
 router.put('/admin/tenant-users/:id', (req, res, next) => adminController.updateTenantUser(req, res, next));
 router.delete('/admin/tenant-users/:id', (req, res, next) => adminController.deleteTenantUser(req, res, next));
 
+// Conversations History API (master > conversationHistory)
+router.get('/admin/conversations', (req, res, next) => adminController.getConversations(req, res, next));
+router.get('/admin/conversations/:sessionId', (req, res, next) => adminController.getSessionMessages(req, res, next));
+router.delete('/admin/conversations/:sessionId', (req, res, next) => adminController.deleteSession(req, res, next));
+
 module.exports = router;

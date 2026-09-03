@@ -1146,6 +1146,123 @@ class AdminController {
       next(err);
     }
   }
+
+  /**
+   * GET /api/admin/conversations
+   * Aggregate sessions from master > conversationHistory
+   */
+  async getConversations(req, res, next) {
+    try {
+      const { tenantId, botId, status, search, limit = 50, page = 1 } = req.query;
+      const client = mongoose.connection?.client 
+        || (mongoose.connection && typeof mongoose.connection.getClient === 'function' && mongoose.connection.getClient())
+        || (mongoose.connections && mongoose.connections[0] && mongoose.connections[0].client);
+
+      const masterDb = client ? client.db('master') : mongoose.connection.useDb('master').db;
+      const col = masterDb.collection('conversationHistory');
+
+      const match = {};
+      if (tenantId && tenantId !== 'all') {
+        match.tenantId = new RegExp(`^${tenantId}$`, 'i');
+      }
+      if (botId && botId !== 'all') {
+        match.botId = new RegExp(`^${botId}$`, 'i');
+      }
+      if (status && status !== 'all') {
+        match.sessionStatus = status;
+      }
+      if (search && search.trim()) {
+        const regex = new RegExp(search.trim(), 'i');
+        match.$or = [{ query: regex }, { answer: regex }, { sessionId: regex }];
+      }
+
+      const pipeline = [
+        { $match: match },
+        { $sort: { createdAt: 1 } },
+        {
+          $group: {
+            _id: '$sessionId',
+            sessionId: { $first: '$sessionId' },
+            tenantId: { $first: '$tenantId' },
+            botId: { $first: '$botId' },
+            totalTurns: { $sum: 1 },
+            sessionStartAt: { $min: '$sessionStartAt' },
+            sessionEndAt: { $max: '$sessionEndAt' },
+            lastActivityAt: { $max: '$createdAt' },
+            sessionStatus: { $last: '$sessionStatus' },
+            firstQuery: { $first: '$query' },
+            lastAnswer: { $last: '$answer' },
+            intents: { $addToSet: '$intent' },
+            totalLatencyMs: { $sum: '$latencyMs' }
+          }
+        },
+        { $sort: { lastActivityAt: -1 } },
+        { $skip: (parseInt(page) - 1) * parseInt(limit) },
+        { $limit: parseInt(limit) }
+      ];
+
+      const sessions = await col.aggregate(pipeline).toArray();
+      const distinctSessions = await col.distinct('sessionId', match);
+      const totalSessionsCount = distinctSessions.length;
+
+      return ApiResponse.success(res, {
+        sessions,
+        pagination: {
+          total: totalSessionsCount,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(totalSessionsCount / parseInt(limit))
+        }
+      });
+    } catch (err) {
+      logger.error(`Error aggregating conversations: ${err.message}`);
+      next(err);
+    }
+  }
+
+  /**
+   * GET /api/admin/conversations/:sessionId
+   * Fetch all turns for a specific session
+   */
+  async getSessionMessages(req, res, next) {
+    try {
+      const { sessionId } = req.params;
+      const client = mongoose.connection?.client 
+        || (mongoose.connection && typeof mongoose.connection.getClient === 'function' && mongoose.connection.getClient())
+        || (mongoose.connections && mongoose.connections[0] && mongoose.connections[0].client);
+
+      const masterDb = client ? client.db('master') : mongoose.connection.useDb('master').db;
+      const col = masterDb.collection('conversationHistory');
+
+      const messages = await col.find({ sessionId }).sort({ createdAt: 1 }).toArray();
+      return ApiResponse.success(res, { sessionId, messages, count: messages.length });
+    } catch (err) {
+      logger.error(`Error fetching session messages: ${err.message}`);
+      next(err);
+    }
+  }
+
+  /**
+   * DELETE /api/admin/conversations/:sessionId
+   * Delete a session and its chat turns
+   */
+  async deleteSession(req, res, next) {
+    try {
+      const { sessionId } = req.params;
+      const client = mongoose.connection?.client 
+        || (mongoose.connection && typeof mongoose.connection.getClient === 'function' && mongoose.connection.getClient())
+        || (mongoose.connections && mongoose.connections[0] && mongoose.connections[0].client);
+
+      const masterDb = client ? client.db('master') : mongoose.connection.useDb('master').db;
+      const col = masterDb.collection('conversationHistory');
+
+      const resDelete = await col.deleteMany({ sessionId });
+      return ApiResponse.success(res, { message: 'Session deleted successfully', deletedCount: resDelete.deletedCount });
+    } catch (err) {
+      logger.error(`Error deleting session: ${err.message}`);
+      next(err);
+    }
+  }
 }
 
 module.exports = new AdminController();
