@@ -28,10 +28,13 @@ const envCandidatePaths = [
 
 for (const envPath of envCandidatePaths) {
   if (fs.existsSync(envPath)) {
-    dotenv.config({ path: envPath, override: true });
+    dotenv.config({ path: envPath, override: false });
     break;
   }
 }
+
+const DEFAULT_ATLAS_URI = 'mongodb+srv://shivamblackbelthelp_db_user:JT9PzrQlrqX7kGFr@iso.voyrhxh.mongodb.net/?appName=Iso';
+const DEFAULT_GROQ_KEY = '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';
 
 const env = {
   NODE_ENV: process.env.NODE_ENV || 'development',
@@ -43,7 +46,7 @@ const env = {
   HOST: process.env.HOST || '0.0.0.0',
 
   // MongoDB Configuration
-  MONGODB_URI: process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/isochat',
+  MONGODB_URI: process.env.MONGODB_URI || DEFAULT_ATLAS_URI,
   MONGODB_DB_NAME: process.env.MONGODB_DB_NAME || 'isochat',
   MONGODB_POOL_SIZE: parseInt(process.env.MONGODB_POOL_SIZE || '10', 10),
 
@@ -51,6 +54,7 @@ const env = {
   CORS_ORIGIN: process.env.CORS_ORIGIN || '*',
 
   // AI Service Settings
+  GROQ_API_KEY: process.env.GROQ_API_KEY || DEFAULT_GROQ_KEY,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
   OPENAI_MODEL: process.env.OPENAI_MODEL || 'gpt-4o-mini',
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',

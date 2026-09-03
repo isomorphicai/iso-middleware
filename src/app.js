@@ -1,3 +1,5 @@
+const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -41,22 +43,38 @@ app.get('/health', (req, res) => {
   return healthController.getHealth(req, res);
 });
 
+// Serve embeddable chatbot.js widget script directly
+app.get('/chatbot.js', (req, res) => {
+  const candidatePaths = [
+    path.join(__dirname, '../public/chatbot.js'),
+    path.join(__dirname, '../chatbot.js'),
+    path.join(__dirname, '../../chat/chatbot.js'),
+    path.join(__dirname, '../chat/chatbot.js'),
+    path.join(process.cwd(), 'public/chatbot.js'),
+    path.join(process.cwd(), 'chatbot.js'),
+    path.join(process.cwd(), 'chat/chatbot.js'),
+    path.join(process.cwd(), '../chat/chatbot.js')
+  ];
+
+  for (const p of candidatePaths) {
+    if (fs.existsSync(p)) {
+      res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      return res.sendFile(p);
+    }
+  }
+
+  return res.status(404).json({ error: 'chatbot.js not found' });
+});
+
 // Mount all API endpoints under /api
 app.use('/api', apiRoutes);
 
-// Serve embeddable chatbot.js widget script directly
-app.get('/chatbot.js', (req, res) => {
-  const chatbotPath = path.join(__dirname, '../../chat/chatbot.js');
-  res.setHeader('Content-Type', 'application/javascript');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.sendFile(chatbotPath);
-});
-
 // Serve static assets from portal client build folder if present
-const path = require('path');
-const fs = require('fs');
 const portalDistPath = path.join(__dirname, '../../iso-portal/client/dist');
-const distPath = fs.existsSync(portalDistPath) ? portalDistPath : path.join(__dirname, '../../iso-admin/client/dist');
+const distPath = fs.existsSync(portalDistPath) ? portalDistPath : (fs.existsSync(path.join(__dirname, '../dist')) ? path.join(__dirname, '../dist') : path.join(__dirname, '../../iso-admin/client/dist'));
 app.use(express.static(distPath, {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.html')) {

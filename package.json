@@ -4,6 +4,7 @@
   "description": "Enterprise API middleware module for ISO Chatbot with MongoDB integration and AI orchestration",
   "main": "src/server.js",
   "scripts": {
+    "build": "node -e \"const cp=require('child_process'),path=require('path');const p=path.join(__dirname,'../iso-portal/client');try{cp.execSync('npm install && npm run build',{cwd:p,stdio:'inherit'});}catch(e){console.warn('Frontend build skipped/handled:',e.message);}\"",
     "start": "node src/server.js",
     "start:test": "NODE_ENV=test node src/server.js",
     "start:stage": "NODE_ENV=stage node src/server.js",
