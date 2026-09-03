@@ -43,39 +43,6 @@ app.get('/health', (req, res) => {
   return healthController.getHealth(req, res);
 });
 
-// Serve embeddable chatbot.js widget script directly
-app.get('/chatbot.js', (req, res) => {
-  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-  res.setHeader('Cross-Origin-Embedder-Policy', 'unsafe-none');
-  res.setHeader('Cache-Control', 'public, max-age=300');
-
-  const candidatePaths = [
-    path.join(__dirname, '../public/chatbot.js'),
-    path.join(__dirname, '../chatbot.js'),
-    path.join(__dirname, '../../chat/chatbot.js'),
-    path.join(__dirname, '../chat/chatbot.js'),
-    path.join(process.cwd(), 'public/chatbot.js'),
-    path.join(process.cwd(), 'chatbot.js'),
-    path.join(process.cwd(), 'chat/chatbot.js'),
-    path.join(process.cwd(), '../chat/chatbot.js')
-  ];
-
-  for (const p of candidatePaths) {
-    if (fs.existsSync(p)) {
-      try {
-        const content = fs.readFileSync(p, 'utf8');
-        return res.send(content);
-      } catch (err) {
-        // continue
-      }
-    }
-  }
-
-  return res.send('console.warn("[ISO Chatbot] Widget initialized.");');
-});
-
 // Mount all API endpoints under /api
 app.use('/api', apiRoutes);
 
