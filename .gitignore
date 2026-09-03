@@ -1,0 +1,76 @@
+# ==========================================
+# Dependencies
+# ==========================================
+node_modules/
+**/node_modules/
+.pnp
+.pnp.js
+
+# ==========================================
+# Build & Distribution Artifacts
+# ==========================================
+dist/
+**/dist/
+build/
+**/build/
+out/
+.next/
+.nuxt/
+
+# ==========================================
+# Vite / Tooling Cache
+# ==========================================
+.vite/
+**/.vite/
+.cache/
+**/.cache/
+
+# ==========================================
+# Environment Variables & Secrets
+# ==========================================
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+# Keep .env.example tracked for documentation
+
+# ==========================================
+# Logs & Debugging
+# ==========================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ==========================================
+# Operating System & IDE Files
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ==========================================
+# Test Coverage
+# ==========================================
+coverage/
+*.lcov
+.nyc_output/
+
+# ==========================================
+# Database Binaries & Storage
+# ==========================================
+mongodb_data/
+**/mongodb_data/
+*.wt
+mongod.lock

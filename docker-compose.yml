@@ -1,0 +1,55 @@
+services:
+  iso-middleware:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: iso-middleware
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    environment:
+      - NODE_ENV=production
+      - PORT=5001
+      - HOST=0.0.0.0
+      - MONGODB_URI=mongodb://mongo:27017/isochat
+      - MONGODB_DB_NAME=isochat
+      - CORS_ORIGIN=*
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - RATE_LIMIT_MAX=120
+      - DEFAULT_BOT_ID=ISOBot
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - isochat-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  mongo:
+    image: mongo:7.0
+    container_name: iso-middleware-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - isochat-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+networks:
+  isochat-network:
+    driver: bridge
+
+volumes:
+  mongo-data:

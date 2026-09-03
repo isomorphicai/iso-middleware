@@ -1,0 +1,48 @@
+{
+  "name": "iso-middleware",
+  "version": "1.0.0",
+  "description": "Enterprise API middleware module for ISO Chatbot with MongoDB integration and AI orchestration",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "start:test": "NODE_ENV=test node src/server.js",
+    "start:stage": "NODE_ENV=stage node src/server.js",
+    "start:prod": "NODE_ENV=prod node src/server.js",
+    "seed": "node src/seed.js",
+    "seed:test": "NODE_ENV=test node src/seed.js",
+    "seed:stage": "NODE_ENV=stage node src/seed.js",
+    "seed:prod": "NODE_ENV=prod node src/seed.js",
+    "dev": "nodemon src/server.js",
+    "test": "node test/basic.test.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "chatbot",
+    "middleware",
+    "mongodb",
+    "express",
+    "docker",
+    "isomorphic",
+    "ai"
+  ],
+  "author": "ISO Team",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.20.0",
+    "bcryptjs": "^3.0.3",
+    "cheerio": "^1.0.0-rc.12",
+    "compression": "^1.7.4",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.3.1",
+    "helmet": "^7.1.0",
+    "mongoose": "^8.4.1",
+    "morgan": "^1.10.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}
