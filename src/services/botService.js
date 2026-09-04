@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const env = require('../config/env');
+const cacheService = require('./cacheService');
 const { DEFAULT_BOT_UI_CONFIGS, DEFAULT_GREETING_MESSAGE, DEFAULT_CUSTOM_FORMS } = require('../constants/botDefaults');
 const logger = require('../helpers/logger');
 
@@ -9,7 +10,6 @@ class BotService {
    */
   resolveDbName(tenantName) {
     const raw = (tenantName || env.DEFAULT_TENANT_CODE || 'default').toString().trim().toLowerCase();
-    // If it already starts with "iso_", use as is; otherwise prepend "iso_"
     return raw.startsWith('iso_') ? raw : `iso_${raw}`;
   }
 
@@ -23,55 +23,62 @@ class BotService {
 
   /**
    * Fetch bot document from dynamic db `iso_${tenantName}` in collection `chatClientSettings`
+   * Cached in Redis for 10 minutes (Cache-Aside pattern).
    */
   async findBotDocument(botId, tenantName) {
-    if (mongoose.connection.readyState !== 1) {
-      const { ensureConnected } = require('../config/database');
-      const reconnected = await ensureConnected();
-      if (!reconnected) {
-        logger.warn(`MongoDB is not connected (readyState: ${mongoose.connection.readyState})`);
-        return null;
+    const cleanTenant = this.resolveDbName(tenantName);
+    const cleanBot = (botId || 'default').toString().trim().toLowerCase();
+    const cacheKey = `bot:doc:${cleanTenant}:${cleanBot}`;
+
+    return cacheService.wrap(cacheKey, async () => {
+      if (mongoose.connection.readyState !== 1) {
+        const { ensureConnected } = require('../config/database');
+        const reconnected = await ensureConnected();
+        if (!reconnected) {
+          logger.warn(`MongoDB is not connected (readyState: ${mongoose.connection.readyState})`);
+          return null;
+        }
       }
-    }
 
-    try {
-      const dbName = this.resolveDbName(tenantName);
-      const tenantDb = this.getTenantDb(tenantName);
-      const collection = tenantDb.collection('chatClientSettings');
+      try {
+        const tenantDb = this.getTenantDb(tenantName);
+        const collection = tenantDb.collection('chatClientSettings');
 
-      logger.info(`Querying database '${dbName}', collection 'chatClientSettings' for botId='${botId}'`);
+        logger.info(`[Mongo Query] Querying database '${cleanTenant}', collection 'chatClientSettings' for botId='${botId}'`);
 
-      let query = {};
-      if (botId && botId !== 'default') {
-        const orConditions = [
-          { botId: botId },
-          { botId: new RegExp(`^${botId}$`, 'i') },
-          { code: botId },
-          { botName: botId },
-          { name: botId }
-        ];
+        let query = {};
+        if (botId && botId !== 'default') {
+          const orConditions = [
+            { botId: botId },
+            { botId: new RegExp(`^${botId}$`, 'i') },
+            { code: botId },
+            { botName: botId },
+            { name: botId }
+          ];
 
-        if (mongoose.Types.ObjectId.isValid(botId)) {
-          orConditions.push({ _id: new mongoose.Types.ObjectId(botId) });
+          if (mongoose.Types.ObjectId.isValid(botId)) {
+            orConditions.push({ _id: new mongoose.Types.ObjectId(botId) });
+          }
+
+          query = { $or: orConditions };
         }
 
-        query = { $or: orConditions };
+        let doc = await collection.findOne(query);
+
+        if (!doc && botId) {
+          doc = await collection.findOne({});
+        }
+
+        if (doc && doc._id) {
+          doc._id = doc._id.toString();
+        }
+
+        return doc;
+      } catch (err) {
+        logger.error(`Error querying dynamic tenant DB: ${err.message}`);
+        return null;
       }
-
-      // Find the bot configuration document
-      let doc = await collection.findOne(query);
-
-      // If not found with specific query and botId was given, try fallback to first document in the collection
-      if (!doc && botId) {
-        logger.warn(`Bot '${botId}' not found in '${dbName}.chatClientSettings', fetching first available bot in collection...`);
-        doc = await collection.findOne({});
-      }
-
-      return doc;
-    } catch (err) {
-      logger.error(`Error querying dynamic tenant DB: ${err.message}`);
-      return null;
-    }
+    });
   }
 
   /**
@@ -97,45 +104,67 @@ class BotService {
   }
 
   /**
-   * Get widget configuration directly from MongoDB Atlas
+   * Get widget configuration directly from Redis cache / MongoDB Atlas
    */
   async getWidgetConfig(botId, tenantName) {
-    try {
-      // Fetch document directly from dynamic database and chatClientSettings collection
-      const doc = await this.findBotDocument(botId, tenantName);
+    const cleanTenant = this.resolveDbName(tenantName);
+    const cleanBot = (botId || 'default').toString().trim().toLowerCase();
+    const cacheKey = `bot:widget:${cleanTenant}:${cleanBot}`;
 
-      if (doc) {
-        logger.info(`Successfully fetched bot document from MongoDB Atlas for botId='${botId}' in DB '${this.resolveDbName(tenantName)}'`);
-        
-        // Ensure standard fields expected by chatbot.js are present
-        if (!doc.botId && doc._id) doc.botId = doc._id.toString();
-        if (!doc.botName && doc.name) doc.botName = doc.name;
-        if (doc.botActive === undefined && doc.status !== undefined) {
-          doc.botActive = doc.status === 'active';
+    return cacheService.wrap(cacheKey, async () => {
+      try {
+        const doc = await this.findBotDocument(botId, tenantName);
+
+        if (doc) {
+          logger.info(`[Mongo Query] Fetched bot widget document for botId='${botId}' in DB '${cleanTenant}'`);
+          
+          if (!doc.botId && doc._id) doc.botId = doc._id.toString();
+          if (!doc.botName && doc.name) doc.botName = doc.name;
+          if (doc.botActive === undefined && doc.status !== undefined) {
+            doc.botActive = doc.status === 'active';
+          }
+
+          return doc;
         }
 
-        return doc;
+        return this.getDefaultWidgetConfig(botId, tenantName);
+      } catch (err) {
+        logger.error(`Error in getWidgetConfig: ${err.message}. Serving fallback defaults.`);
+        return this.getDefaultWidgetConfig(botId, tenantName);
       }
-
-      logger.warn(`No bot document found in MongoDB Atlas. Serving fallback defaults.`);
-      return this.getDefaultWidgetConfig(botId, tenantName);
-    } catch (err) {
-      logger.error(`Error in getWidgetConfig: ${err.message}. Serving fallback defaults.`);
-      return this.getDefaultWidgetConfig(botId, tenantName);
-    }
+    });
   }
 
   /**
-   * List all bots for a given tenant database
+   * List all bots for a given tenant database (Cached in Redis)
    */
   async getBots(tenantName) {
-    if (mongoose.connection.readyState !== 1) {
-      return [];
-    }
+    const cleanTenant = this.resolveDbName(tenantName);
+    const cacheKey = `bot:list:${cleanTenant}`;
 
-    const tenantDb = this.getTenantDb(tenantName);
-    const collection = tenantDb.collection('chatClientSettings');
-    return collection.find({}).toArray();
+    return cacheService.wrap(cacheKey, async () => {
+      if (mongoose.connection.readyState !== 1) {
+        return [];
+      }
+
+      const tenantDb = this.getTenantDb(tenantName);
+      const collection = tenantDb.collection('chatClientSettings');
+      const docs = await collection.find({}).toArray();
+      return docs.map(d => ({ ...d, _id: d._id.toString() }));
+    });
+  }
+
+  /**
+   * Invalidate bot cache on update/create
+   */
+  async invalidateBotCache(tenantName, botId) {
+    const cleanTenant = this.resolveDbName(tenantName);
+    await cacheService.delPattern(`bot:*:${cleanTenant}:*`);
+    await cacheService.del(`bot:list:${cleanTenant}`);
+    if (botId) {
+      await cacheService.del(`bot:doc:${cleanTenant}:${botId.toLowerCase()}`);
+      await cacheService.del(`bot:widget:${cleanTenant}:${botId.toLowerCase()}`);
+    }
   }
 }
 

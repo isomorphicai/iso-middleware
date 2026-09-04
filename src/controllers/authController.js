@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { User, RolePermission, Tenant } = require('../models');
+const cacheService = require('../services/cacheService');
 const logger = require('../helpers/logger');
 
 // Inactivity timeout: 2 Hours (7200000 milliseconds)
@@ -46,37 +47,41 @@ class AuthController {
     return crypto.randomBytes(24).toString('hex');
   }
 
-  // Helper: Resolve dynamic allowed menus for user/role
+  // Helper: Resolve dynamic allowed menus for user/role (Cached in Redis)
   async resolveAllowedMenus(userRole, tenantId) {
-    try {
-      const masterDb = this.getMasterDb();
-      let allowedMenus = [];
-      const roleQuery = (userRole || '').toLowerCase().replace(/\s+/g, '_');
-      
-      const roleDoc = await masterDb.collection('roles').findOne({
-        $or: [
-          { roleId: userRole },
-          { roleName: userRole },
-          { roleId: roleQuery }
-        ]
-      });
+    const roleKey = (userRole || 'default').toLowerCase().replace(/\s+/g, '_');
+    const cacheKey = `role:menus:${roleKey}:${tenantId || 'all'}`;
 
-      if (roleDoc && Array.isArray(roleDoc.allowedMenus) && roleDoc.allowedMenus.length > 0) {
-        allowedMenus = roleDoc.allowedMenus;
-      } else if (userRole === 'Super Admin' || userRole === 'super_admin' || userRole === 'global_admin' || !tenantId) {
-        const activeMenus = await masterDb.collection('menus').find({ active: true }).sort({ sortOrder: 1 }).toArray();
-        allowedMenus = activeMenus.length > 0 ? activeMenus.map(m => m.menuId) : ['tenants', 'analytics', 'ingestion', 'conversations', 'chat'];
-      } else {
-        allowedMenus = ['analytics', 'ingestion', 'chat'];
+    return cacheService.wrap(cacheKey, async () => {
+      try {
+        const masterDb = this.getMasterDb();
+        let allowedMenus = [];
+        
+        const roleDoc = await masterDb.collection('roles').findOne({
+          $or: [
+            { roleId: userRole },
+            { roleName: userRole },
+            { roleId: roleKey }
+          ]
+        });
+
+        if (roleDoc && Array.isArray(roleDoc.allowedMenus) && roleDoc.allowedMenus.length > 0) {
+          allowedMenus = roleDoc.allowedMenus;
+        } else if (userRole === 'Super Admin' || userRole === 'super_admin' || userRole === 'global_admin' || !tenantId) {
+          const activeMenus = await masterDb.collection('menus').find({ active: true }).sort({ sortOrder: 1 }).toArray();
+          allowedMenus = activeMenus.length > 0 ? activeMenus.map(m => m.menuId) : ['tenants', 'analytics', 'ingestion', 'conversations', 'chat'];
+        } else {
+          allowedMenus = ['analytics', 'ingestion', 'chat'];
+        }
+        return allowedMenus;
+      } catch (err) {
+        logger.error(`Error resolving allowed menus: ${err.message}`);
+        return ['tenants', 'analytics', 'ingestion', 'conversations', 'chat'];
       }
-      return allowedMenus;
-    } catch (err) {
-      logger.error(`Error resolving allowed menus: ${err.message}`);
-      return ['tenants', 'analytics', 'ingestion', 'conversations', 'chat'];
-    }
+    });
   }
 
-  // Helper: Resolve allowed analytics widgets for user/role
+  // Helper: Resolve allowed analytics widgets for user/role (Cached in Redis)
   async resolveAllowedWidgets(userRole, tenantId) {
     const ALL_WIDGET_IDS = [
       'total_questions', 'total_sessions', 'avg_questions_day', 'avg_questions_session',
@@ -85,30 +90,34 @@ class AuthController {
       'csat_breakdown_chart', 'top_queries_table', 'recent_sessions_table'
     ];
 
-    try {
-      if (userRole === 'Super Admin' || userRole === 'super_admin' || userRole === 'global_admin' || !tenantId) {
-        return ALL_WIDGET_IDS;
-      }
-
-      const masterDb = this.getMasterDb();
-      const roleQuery = (userRole || '').toLowerCase().replace(/\s+/g, '_');
-      const roleDoc = await masterDb.collection('roles').findOne({
-        $or: [
-          { roleId: userRole },
-          { roleName: userRole },
-          { roleId: roleQuery }
-        ]
-      });
-
-      if (roleDoc && Array.isArray(roleDoc.allowedWidgets) && roleDoc.allowedWidgets.length > 0) {
-        return roleDoc.allowedWidgets;
-      }
-
-      return ALL_WIDGET_IDS;
-    } catch (err) {
-      logger.error(`Error resolving allowed widgets: ${err.message}`);
+    if (userRole === 'Super Admin' || userRole === 'super_admin' || userRole === 'global_admin' || !tenantId) {
       return ALL_WIDGET_IDS;
     }
+
+    const roleKey = (userRole || 'default').toLowerCase().replace(/\s+/g, '_');
+    const cacheKey = `role:widgets:${roleKey}:${tenantId || 'all'}`;
+
+    return cacheService.wrap(cacheKey, async () => {
+      try {
+        const masterDb = this.getMasterDb();
+        const roleDoc = await masterDb.collection('roles').findOne({
+          $or: [
+            { roleId: userRole },
+            { roleName: userRole },
+            { roleId: roleKey }
+          ]
+        });
+
+        if (roleDoc && Array.isArray(roleDoc.allowedWidgets) && roleDoc.allowedWidgets.length > 0) {
+          return roleDoc.allowedWidgets;
+        }
+
+        return ALL_WIDGET_IDS;
+      } catch (err) {
+        logger.error(`Error resolving allowed widgets: ${err.message}`);
+        return ALL_WIDGET_IDS;
+      }
+    });
   }
 
 
@@ -281,6 +290,7 @@ class AuthController {
 
   // ==========================================
   // AUTH: SESSION VERIFICATION & AUTO-EXPIRY (2 HOURS INACTIVITY)
+  // Cached in Redis for 10 minutes to eliminate DB latency on route checks
   // ==========================================
   async verifySession(req, res, next) {
     try {
@@ -293,10 +303,18 @@ class AuthController {
         return res.status(401).json({ error: 'No active session token provided.', active: false });
       }
 
+      // Check Redis Cache first
+      const cacheKey = `session:token:${sessionId}`;
+      const cached = await cacheService.get(cacheKey);
+      if (cached && cached.active) {
+        return res.json(cached);
+      }
+
       const sessionCol = this.getSessionCollection();
       const session = await sessionCol.findOne({ sessionId });
 
       if (!session || !session.isActive) {
+        await cacheService.del(cacheKey);
         return res.status(401).json({ 
           error: 'Session is invalid or does not exist.', 
           active: false 
@@ -310,6 +328,7 @@ class AuthController {
       // Check if session has exceeded the 2-hour inactivity limit -> Delete immediately
       if (inactiveDuration > INACTIVITY_TIMEOUT_MS) {
         await sessionCol.deleteOne({ sessionId });
+        await cacheService.del(cacheKey);
         logger.info(`Session deleted due to 2h inactivity for user "${session.username}" (sessionId: ${sessionId})`);
         return res.status(401).json({ 
           error: 'Session expired due to 2 hours of inactivity. Please log in again.', 
@@ -320,7 +339,7 @@ class AuthController {
 
       // Update lastActivityTime to current time
       const currentDate = new Date();
-      await sessionCol.updateOne(
+      sessionCol.updateOne(
         { sessionId },
         { 
           $set: { 
@@ -328,7 +347,7 @@ class AuthController {
             updatedAt: currentDate 
           } 
         }
-      );
+      ).catch(() => {});
 
       // Re-fetch master user record to get any updated full name / photo / phone
       const masterDb = this.getMasterDb();
@@ -338,7 +357,7 @@ class AuthController {
       const allowedMenus = await this.resolveAllowedMenus(session.role, session.tenantId);
       const allowedWidgets = await this.resolveAllowedWidgets(session.role, session.tenantId);
 
-      return res.json({
+      const responsePayload = {
         active: true,
         sessionId: session.sessionId,
         user: {
@@ -356,7 +375,12 @@ class AuthController {
           loginTime: session.loginTime,
           lastActivityTime: currentDate
         }
-      });
+      };
+
+      // Cache session result in Redis for 10 minutes (600s)
+      await cacheService.set(cacheKey, responsePayload, 600);
+
+      return res.json(responsePayload);
     } catch (err) {
       logger.error(`Session verification error: ${err.message}`);
       next(err);
@@ -381,6 +405,7 @@ class AuthController {
       const session = await sessionCol.findOne({ sessionId });
 
       if (!session || !session.isActive) {
+        await cacheService.del(`session:token:${sessionId}`);
         return res.status(401).json({ active: false, error: 'Session is inactive.' });
       }
 
@@ -390,12 +415,13 @@ class AuthController {
       // Check inactivity limit -> Delete immediately if timed out
       if (now - lastActive > INACTIVITY_TIMEOUT_MS) {
         await sessionCol.deleteOne({ sessionId });
+        await cacheService.del(`session:token:${sessionId}`);
         return res.status(401).json({ active: false, reason: 'inactivity', error: 'Session timed out.' });
       }
 
       // Update activity timestamp
       const currentDate = new Date();
-      await sessionCol.updateOne(
+      sessionCol.updateOne(
         { sessionId },
         { 
           $set: { 
@@ -403,7 +429,7 @@ class AuthController {
             updatedAt: currentDate 
           } 
         }
-      );
+      ).catch(() => {});
 
       return res.json({ success: true, active: true, lastActivityTime: currentDate });
     } catch (err) {
@@ -424,6 +450,8 @@ class AuthController {
       if (sessionId) {
         const sessionCol = this.getSessionCollection();
         await sessionCol.deleteOne({ sessionId });
+        // Immediately delete from Redis Cache
+        await cacheService.del(`session:token:${sessionId}`);
         logger.info(`Session immediately deleted on logout for sessionId: ${sessionId}`);
       }
 

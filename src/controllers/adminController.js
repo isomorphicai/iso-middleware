@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const ApiResponse = require('../helpers/apiResponse');
 const logger = require('../helpers/logger');
 const genAISettingsService = require('../services/genAISettingsService');
+const cacheService = require('../services/cacheService');
 const { DEFAULT_BOT_UI_CONFIGS, DEFAULT_GREETING_MESSAGE, DEFAULT_CUSTOM_FORMS } = require('../constants/botDefaults');
 
 class AdminController {
@@ -56,28 +57,28 @@ class AdminController {
 
   /**
    * GET /api/admin/tenants
-   * Fetch all tenants from master > tenantInfo collection
+   * Fetch all tenants from master > tenantInfo collection (Cached in Redis)
    */
   async getTenants(req, res, next) {
     try {
-      const col = this.getTenantInfoCollection();
-      const rawTenants = await col.find({}).sort({ createdAt: -1 }).toArray();
+      const tenants = await cacheService.wrap('portal:tenants', async () => {
+        const col = this.getTenantInfoCollection();
+        const rawTenants = await col.find({}).sort({ createdAt: -1 }).toArray();
 
-      // Normalize tenant documents for UI consumption
-      const tenants = rawTenants.map(t => ({
-        _id: t._id.toString(),
-        tenantId: t.tenantId || t.code || t._id.toString(),
-        name: t.tenantName || t.name || t.tenantId || 'Unnamed Tenant',
-        tenantName: t.tenantName || t.name || t.tenantId,
-        code: t.tenantId || t.code || 'tenant',
-        tenantDbName: t.tenantDbName || (t.tenantId ? `iso_${t.tenantId}` : 'iso_default'),
-        Bots: t.Bots || [],
-        tenantActive: t.tenantActive !== undefined ? t.tenantActive : true,
-        tenantConfig: t.tenantConfig || {},
-        createdAt: t.createdAt || new Date()
-      }));
+        return rawTenants.map(t => ({
+          _id: t._id.toString(),
+          tenantId: t.tenantId || t.code || t._id.toString(),
+          name: t.tenantName || t.name || t.tenantId || 'Unnamed Tenant',
+          tenantName: t.tenantName || t.name || t.tenantId,
+          code: t.tenantId || t.code || 'tenant',
+          tenantDbName: t.tenantDbName || (t.tenantId ? `iso_${t.tenantId}` : 'iso_default'),
+          Bots: t.Bots || [],
+          tenantActive: t.tenantActive !== undefined ? t.tenantActive : true,
+          tenantConfig: t.tenantConfig || {},
+          createdAt: t.createdAt || new Date()
+        }));
+      });
 
-      logger.info(`Fetched ${tenants.length} tenants from master.tenantInfo`);
       return res.json(tenants);
     } catch (err) {
       logger.error(`Error fetching tenants from master.tenantInfo: ${err.message}`);
@@ -752,10 +753,13 @@ class AdminController {
         await col.updateOne({ _id: existing._id }, { $set: updateData });
         const updated = await col.findOne({ _id: existing._id });
         updated._id = updated._id.toString();
+        // Invalidate GenAI settings cache
+        await cacheService.delPattern(`genai:settings:${targetDb}:*`);
         return res.json(updated);
       } else {
         updateData.createdAt = new Date();
         const result = await col.insertOne(updateData);
+        await cacheService.delPattern(`genai:settings:${targetDb}:*`);
         return res.json({ _id: result.insertedId.toString(), ...updateData });
       }
     } catch (err) {
@@ -765,14 +769,16 @@ class AdminController {
   }
 
   // =========================================================================
-  // MENUS CRUD (master > menus)
+  // MENUS CRUD (master > menus - Cached in Redis)
   // =========================================================================
 
   async getMenus(req, res, next) {
     try {
-      const masterDb = mongoose.connection.useDb('master', { useCache: true });
-      const menus = await masterDb.collection('menus').find({}).sort({ sortOrder: 1 }).toArray();
-      const mapped = menus.map(m => ({ ...m, _id: m._id.toString() }));
+      const mapped = await cacheService.wrap('portal:menus', async () => {
+        const masterDb = mongoose.connection.useDb('master', { useCache: true });
+        const menus = await masterDb.collection('menus').find({}).sort({ sortOrder: 1 }).toArray();
+        return menus.map(m => ({ ...m, _id: m._id.toString() }));
+      });
       return res.json(mapped);
     } catch (err) {
       logger.error(`Error fetching menus: ${err.message}`);
@@ -806,6 +812,10 @@ class AdminController {
       };
 
       const result = await masterDb.collection('menus').insertOne(newMenu);
+      // Invalidate menus cache
+      await cacheService.del('portal:menus');
+      await cacheService.delPattern('role:menus:*');
+
       return res.status(201).json({ _id: result.insertedId.toString(), ...newMenu });
     } catch (err) {
       logger.error(`Error creating menu: ${err.message}`);
@@ -841,6 +851,10 @@ class AdminController {
       const updated = await masterDb.collection('menus').findOne(query);
       if (!updated) return res.status(404).json({ error: 'Menu not found.' });
 
+      // Invalidate menus cache
+      await cacheService.del('portal:menus');
+      await cacheService.delPattern('role:menus:*');
+
       updated._id = updated._id.toString();
       return res.json(updated);
     } catch (err) {
@@ -864,6 +878,11 @@ class AdminController {
       if (result.deletedCount === 0) {
         return res.status(404).json({ error: 'Menu not found.' });
       }
+
+      // Invalidate menus cache
+      await cacheService.del('portal:menus');
+      await cacheService.delPattern('role:menus:*');
+
       return res.json({ success: true, message: 'Menu deleted.' });
     } catch (err) {
       logger.error(`Error deleting menu: ${err.message}`);
@@ -872,14 +891,16 @@ class AdminController {
   }
 
   // =========================================================================
-  // ROLES CRUD (master > roles)
+  // ROLES CRUD (master > roles - Cached in Redis)
   // =========================================================================
 
   async getRoles(req, res, next) {
     try {
-      const masterDb = mongoose.connection.useDb('master', { useCache: true });
-      const roles = await masterDb.collection('roles').find({}).toArray();
-      const mapped = roles.map(r => ({ ...r, _id: r._id.toString() }));
+      const mapped = await cacheService.wrap('portal:roles', async () => {
+        const masterDb = mongoose.connection.useDb('master', { useCache: true });
+        const roles = await masterDb.collection('roles').find({}).toArray();
+        return roles.map(r => ({ ...r, _id: r._id.toString() }));
+      });
       return res.json(mapped);
     } catch (err) {
       logger.error(`Error fetching roles: ${err.message}`);
@@ -912,6 +933,11 @@ class AdminController {
       };
 
       const result = await masterDb.collection('roles').insertOne(newRole);
+
+      // Invalidate roles cache & role permissions
+      await cacheService.del('portal:roles');
+      await cacheService.delPattern('role:*');
+
       return res.status(201).json({ _id: result.insertedId.toString(), ...newRole });
     } catch (err) {
       logger.error(`Error creating role: ${err.message}`);
@@ -943,6 +969,11 @@ class AdminController {
       await masterDb.collection('roles').updateOne(query, { $set: updateFields });
       const updated = await masterDb.collection('roles').findOne(query);
       if (!updated) return res.status(404).json({ error: 'Role not found.' });
+
+      // Invalidate roles cache & user session permissions
+      await cacheService.del('portal:roles');
+      await cacheService.delPattern('role:*');
+      await cacheService.delPattern('session:token:*');
 
       updated._id = updated._id.toString();
       return res.json(updated);

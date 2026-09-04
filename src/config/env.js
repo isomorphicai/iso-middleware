@@ -66,7 +66,11 @@ const env = {
   
   // Default Tenant & Bot identifiers
   DEFAULT_TENANT_CODE: process.env.DEFAULT_TENANT_CODE || 'default',
-  DEFAULT_BOT_ID: process.env.DEFAULT_BOT_ID || 'ISOBot'
+  DEFAULT_BOT_ID: process.env.DEFAULT_BOT_ID || 'ISOBot',
+
+  // Redis Cloud Cache Configuration
+  REDIS_URI: process.env.REDIS_URI || 'redis://default:HScw2zP1ioK09sDS9vrliKLvtuHzPGt1@stouthearted-root-branch-87084.db.redis.io:16166',
+  REDIS_CACHE_TTL: parseInt(process.env.REDIS_CACHE_TTL || '600', 10) // 10 minutes (600 seconds)
 };
 
 module.exports = env;

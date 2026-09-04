@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const cacheService = require('./cacheService');
 const logger = require('../helpers/logger');
 
 const DEFAULT_SYSTEM_PROMPT = `You are $$tenantFullName virtual assistant ($$botName), a friendly, intelligent, and concise enterprise AI assistant. Answer user inquiries accurately and helpfully using the provided knowledge base context.`;
@@ -130,48 +131,63 @@ class GenAISettingsService {
   }
 
   /**
-   * Retrieve Gen AI settings directly from tenant database > genAISettings collection
+   * Retrieve Gen AI settings directly from Redis Cloud / tenant database > genAISettings collection
+   * Cached in Redis for 10 minutes (Cache-Aside pattern).
    */
   async getSettings({ tenantId, botId, tenantDbName }) {
-    try {
-      const tenantDb = this.getTenantDb(tenantId, tenantDbName);
-      const col = tenantDb.collection('genAISettings');
+    const cleanTenant = this.resolveDbName(tenantId, tenantDbName);
+    const cleanBot = (botId || 'isobot').toString().trim().toLowerCase();
+    const cacheKey = `genai:settings:${cleanTenant}:${cleanBot}`;
 
-      let query = {};
-      if (botId) {
-        query = {
-          $or: [
-            { botId },
-            { botId: new RegExp(`^${botId}$`, 'i') },
-            { code: botId },
-            { chatBotFlag: botId }
-          ]
+    return cacheService.wrap(cacheKey, async () => {
+      try {
+        const tenantDb = this.getTenantDb(tenantId, tenantDbName);
+        const col = tenantDb.collection('genAISettings');
+
+        logger.info(`[Mongo Query] Fetching genAISettings from "${cleanTenant}.genAISettings" for bot "${botId}"`);
+
+        let query = {};
+        if (botId) {
+          query = {
+            $or: [
+              { botId },
+              { botId: new RegExp(`^${botId}$`, 'i') },
+              { code: botId },
+              { chatBotFlag: botId }
+            ]
+          };
+        }
+
+        let doc = await col.findOne(query);
+
+        if (!doc && botId) {
+          doc = await col.findOne({});
+        }
+
+        const defaults = this.getDefaultSettings(botId, tenantId);
+
+        if (!doc) {
+          return defaults;
+        }
+
+        return {
+          ...defaults,
+          ...doc,
+          _id: doc._id?.toString()
         };
+      } catch (err) {
+        logger.error(`[GenAI Settings] Error fetching settings for tenant "${tenantId}", bot "${botId}": ${err.message}`);
+        return this.getDefaultSettings(botId, tenantId);
       }
+    });
+  }
 
-      let doc = await col.findOne(query);
-
-      // Fallback to first document in genAISettings if specific bot document isn't found
-      if (!doc && botId) {
-        doc = await col.findOne({});
-      }
-
-      const defaults = this.getDefaultSettings(botId, tenantId);
-
-      if (!doc) {
-        return defaults;
-      }
-
-      // Merge document with defaults to guarantee all required fields exist
-      return {
-        ...defaults,
-        ...doc,
-        _id: doc._id?.toString()
-      };
-    } catch (err) {
-      logger.error(`[GenAI Settings] Error fetching settings for tenant "${tenantId}", bot "${botId}": ${err.message}`);
-      return this.getDefaultSettings(botId, tenantId);
-    }
+  /**
+   * Invalidate settings cache in Redis on update
+   */
+  async invalidateSettings(tenantId, botId) {
+    const cleanTenant = this.resolveDbName(tenantId);
+    await cacheService.delPattern(`genai:settings:${cleanTenant}:*`);
   }
 
   /**

@@ -3,6 +3,7 @@ const scraperService = require('./scraperService');
 const chunkerService = require('./chunkerService');
 const embeddingService = require('./embeddingService');
 const genAISettingsService = require('./genAISettingsService');
+const cacheService = require('./cacheService');
 const logger = require('../helpers/logger');
 
 class RagService {
@@ -177,6 +178,9 @@ class RagService {
 
     logger.info(`[RAG Service] Successfully saved ${chunkDocs.length} chunks with vector embeddings in MongoDB Atlas under index "${vectorIndexName}"`);
 
+    // Invalidate ingestion sources cache
+    await cacheService.delPattern(`ingestion:sources:${cleanTenantId}:*`);
+
     return {
       _id: sourceId.toString(),
       ...sourceDoc,
@@ -185,27 +189,30 @@ class RagService {
   }
 
   /**
-   * List all ingested sources for a specific tenant and bot
+   * List all ingested sources for a specific tenant and bot (Cached in Redis)
    */
   async getSources({ tenantId, botId, tenantDbName }) {
     const cleanTenantId = await this.resolveCanonicalTenantId(tenantId);
     const tenantDb = this.getTenantDb(cleanTenantId, tenantDbName);
     const cleanBotId = botId ? await this.resolveCanonicalBotId(botId, tenantDb) : null;
+    const cacheKey = `ingestion:sources:${cleanTenantId}:${cleanBotId || 'all'}`;
 
-    const filter = {};
-    if (cleanBotId) {
-      filter.$or = [{ botId: cleanBotId }, { botId }];
-    }
+    return cacheService.wrap(cacheKey, async () => {
+      const filter = {};
+      if (cleanBotId) {
+        filter.$or = [{ botId: cleanBotId }, { botId }];
+      }
 
-    const sources = await tenantDb.collection('ingestion_sources')
-      .find(filter)
-      .sort({ createdAt: -1 })
-      .toArray();
+      const sources = await tenantDb.collection('ingestion_sources')
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .toArray();
 
-    return sources.map(s => ({
-      ...s,
-      _id: s._id.toString()
-    }));
+      return sources.map(s => ({
+        ...s,
+        _id: s._id.toString()
+      }));
+    });
   }
 
   /**
@@ -255,6 +262,9 @@ class RagService {
 
     await tenantDb.collection('rag_chunks').deleteMany({ sourceId: sId });
     await tenantDb.collection('ingestion_sources').deleteOne({ _id: sId });
+
+    // Invalidate sources cache
+    await cacheService.delPattern(`ingestion:sources:${cleanTenantId}:*`);
 
     return { success: true, message: 'Source and associated vector chunks deleted from Atlas.' };
   }

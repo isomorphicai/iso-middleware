@@ -11,7 +11,11 @@ async function startServer() {
     // 1. Initialize MongoDB connection
     await connectDB();
 
-    // 2. Start background link expiry & notification worker
+    // 2. Initialize Redis Cloud Cache
+    const { initRedis } = require('./config/redis');
+    initRedis();
+
+    // 3. Start background link expiry & notification worker
     expiryWorker.start();
 
     // 3. Start Express HTTP Server
