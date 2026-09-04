@@ -44,4 +44,9 @@ router.get('/admin/conversations', (req, res, next) => adminController.getConver
 router.get('/admin/conversations/:sessionId', (req, res, next) => adminController.getSessionMessages(req, res, next));
 router.delete('/admin/conversations/:sessionId', (req, res, next) => adminController.deleteSession(req, res, next));
 
+// Analytics Dashboard API
+router.get('/admin/analytics', (req, res, next) => adminController.getAnalyticsDashboard(req, res, next));
+router.get('/analytics', (req, res, next) => adminController.getAnalyticsDashboard(req, res, next));
+
 module.exports = router;
+

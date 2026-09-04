@@ -1,11 +1,12 @@
 const llmService = require('./llmService');
+const genAISettingsService = require('./genAISettingsService');
 const logger = require('../helpers/logger');
 
 class QueryRewriterService {
   /**
    * Rewrites and expands a user query into multiple search angles for vector search
    */
-  async rewriteAndExpandQuery({ query, history = [], bot = {} }) {
+  async rewriteAndExpandQuery({ query, history = [], bot = {}, genAISettings = null, tenantId = '', botId = '' }) {
     if (!query || typeof query !== 'string') {
       return [query];
     }
@@ -17,32 +18,51 @@ class QueryRewriterService {
     ];
 
     try {
-      const historyContext = history.length > 0 
-        ? history.slice(-4).map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content}`).join('\n')
-        : 'None';
+      // 1. Resolve genAISettings from tenant database if not passed
+      let settings = genAISettings;
+      if (!settings) {
+        settings = await genAISettingsService.getSettings({
+          tenantId: tenantId || bot?.tenantId,
+          botId: botId || bot?.botId || bot?.code
+        });
+      }
 
-      const prompt = `You are an expert search query expansion system for a RAG vector database.
-Given the conversation history and the user's latest query, generate 2-3 concise, high-recall search queries.
-- Query 1: Standalone version of the user query resolving pronouns (e.g. replacing "it", "they" with the specific topic discussed).
-- Query 2: Keyword-focused semantic search query emphasizing key concepts.
-- Query 3: Alternative phrasing or synonym-based search query.
+      // If rewriter is explicitly disabled in genAISettings, return fallback
+      if (settings?.improvedQueryRewriter === false || settings?.genAiEnabled === false) {
+        return fallbackQueries;
+      }
 
-Respond ONLY with a valid JSON array of 2-3 strings. Do not add markdown or extra commentary.
+      // 2. Format history context based on settings
+      let historyContext = 'None';
+      const includeHistory = settings?.includeConversationHistoryInQueryRewriter !== false;
+      const historyLimit = parseInt(settings?.conversationHistoryLimit) || 4;
 
-Conversation History:
-${historyContext}
+      if (includeHistory && Array.isArray(history) && history.length > 0) {
+        historyContext = history.slice(-historyLimit).map(h => {
+          const role = h.role === 'user' || h.sender === 'user' ? 'User' : 'Assistant';
+          const content = h.content || h.text || h.response || '';
+          return `${role}: ${content}`;
+        }).join('\n');
+      }
 
-Latest User Query: "${cleanQuery}"`;
+      // 3. Interpolate prompt template from tenant genAISettings
+      const rawPrompt = settings?.queryRewritePrompt || genAISettingsService.getDefaultSettings().queryRewritePrompt;
+      const prompt = genAISettingsService.interpolate(rawPrompt, {
+        chatHistory: historyContext,
+        userQuery: cleanQuery,
+        tenantFullName: settings?.tenantFullName || 'Enterprise',
+        botName: bot?.botName || bot?.name || 'Bot'
+      });
 
       const response = await llmService.chatCompletion({
         messages: [{ role: 'system', content: prompt }],
         temperature: 0.2,
-        maxTokens: 150
+        maxTokens: parseInt(settings?.maxTokens) || 150,
+        model: settings?.textGenerationModel || bot?.model
       });
 
-      const parsed = this.safeParseArray(response.content);
+      const parsed = this.safeParseArrayOrJson(response.content);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        // Ensure original query is included
         const unique = Array.from(new Set([cleanQuery, ...parsed.map(q => String(q).trim())])).filter(Boolean);
         return unique.slice(0, 3);
       }
@@ -53,13 +73,28 @@ Latest User Query: "${cleanQuery}"`;
     return fallbackQueries;
   }
 
-  safeParseArray(str) {
+  safeParseArrayOrJson(str) {
+    if (!str || typeof str !== 'string') return null;
     try {
-      const match = str.match(/\[.*\]/s);
-      return JSON.parse(match ? match[0] : str);
+      // Direct array match
+      const arrayMatch = str.match(/\[.*\]/s);
+      if (arrayMatch) {
+        const parsed = JSON.parse(arrayMatch[0]);
+        if (Array.isArray(parsed)) return parsed;
+      }
+      
+      // JSON object with standaloneQuestions or queries array
+      const objMatch = str.match(/\{.*\}/s);
+      if (objMatch) {
+        const parsed = JSON.parse(objMatch[0]);
+        if (Array.isArray(parsed.standaloneQuestions)) return parsed.standaloneQuestions;
+        if (Array.isArray(parsed.queries)) return parsed.queries;
+        if (Array.isArray(parsed.questions)) return parsed.questions;
+      }
     } catch (e) {
       return null;
     }
+    return null;
   }
 }
 

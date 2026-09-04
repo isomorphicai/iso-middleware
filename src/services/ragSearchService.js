@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const embeddingService = require('./embeddingService');
+const genAISettingsService = require('./genAISettingsService');
 const logger = require('../helpers/logger');
 
 class RagSearchService {
@@ -86,20 +87,17 @@ class RagSearchService {
 
     const vectorIndexName = `${cleanTenantId.replace(/\s+/g, '_')}_${cleanBotId.replace(/\s+/g, '_')}`;
 
-    // 1. Fetch bot's genAISettings to get embedding model & dimensions
-    let embeddingDimensions = 1024;
-    let embeddingModel = 'amazon.titan-embed-text-v2:0';
-    try {
-      const genAISettings = await tenantDb.collection('genAISettings').findOne({
-        $or: [{ botId: cleanBotId }, { chatBotFlag: cleanBotId }, { botId }]
-      });
-      if (genAISettings?.embeddingsModelDimentions) {
-        embeddingDimensions = parseInt(genAISettings.embeddingsModelDimentions);
-      }
-      if (genAISettings?.embeddingsGenerationModel) {
-        embeddingModel = genAISettings.embeddingsGenerationModel;
-      }
-    } catch (e) {}
+    // 1. Fetch bot's genAISettings from tenant database
+    const genAISettings = await genAISettingsService.getSettings({
+      tenantId: cleanTenantId,
+      botId: cleanBotId,
+      tenantDbName
+    });
+
+    const embeddingDimensions = parseInt(genAISettings.embeddingsModelDimentions) || 1024;
+    const embeddingModel = genAISettings.embeddingsGenerationModel || 'amazon.titan-embed-text-v2:0';
+    const finalTopK = topK || parseInt(genAISettings.topK) || 4;
+    const finalScoreThreshold = scoreThreshold !== undefined ? scoreThreshold : (parseFloat(genAISettings.scoreThreshold) || 0.05);
 
     // 2. Fetch all active chunks for this vector index partition from MongoDB Atlas
     const chunks = await tenantDb.collection('rag_chunks').find({
@@ -165,9 +163,9 @@ class RagSearchService {
 
     // 5. Filter by threshold and sort by highest similarity
     const results = Array.from(chunkScoreMap.values())
-      .filter(item => item.score >= scoreThreshold)
+      .filter(item => item.score >= finalScoreThreshold)
       .sort((a, b) => b.score - a.score)
-      .slice(0, topK);
+      .slice(0, finalTopK);
 
     logger.info(`[RAG Search] Retrieved ${results.length} chunks (best score: ${results[0]?.score || 0}%) for index "${vectorIndexName}"`);
     return results;

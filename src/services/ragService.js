@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const scraperService = require('./scraperService');
 const chunkerService = require('./chunkerService');
 const embeddingService = require('./embeddingService');
+const genAISettingsService = require('./genAISettingsService');
 const logger = require('../helpers/logger');
 
 class RagService {
@@ -80,25 +81,17 @@ class RagService {
     // 1. Scrape webpage content
     const scraped = await scraperService.scrapeUrl(url);
 
-    // 2. Fetch bot's genAISettings to get chunking and embedding configurations
-    let chunkSize = 600;
-    let chunkOverlap = 100;
-    let embeddingModel = 'amazon.titan-embed-text-v2:0';
-    let embeddingDimensions = 1024;
+    // 2. Fetch bot's genAISettings from tenant database
+    const genAISettings = await genAISettingsService.getSettings({
+      tenantId: cleanTenantId,
+      botId: cleanBotId,
+      tenantDbName
+    });
 
-    try {
-      const genAISettings = await tenantDb.collection('genAISettings').findOne({
-        $or: [{ botId: cleanBotId }, { chatBotFlag: cleanBotId }, { botId }]
-      });
-      if (genAISettings) {
-        if (genAISettings.chunkSize) chunkSize = parseInt(genAISettings.chunkSize);
-        if (genAISettings.chunkOverlapSize) chunkOverlap = parseInt(genAISettings.chunkOverlapSize);
-        if (genAISettings.embeddingsGenerationModel) embeddingModel = genAISettings.embeddingsGenerationModel;
-        if (genAISettings.embeddingsModelDimentions) embeddingDimensions = parseInt(genAISettings.embeddingsModelDimentions);
-      }
-    } catch (e) {
-      logger.warn(`[RAG Service] Using default genAISettings: ${e.message}`);
-    }
+    const chunkSize = parseInt(genAISettings.chunkSize) || 600;
+    const chunkOverlap = parseInt(genAISettings.chunkOverlapSize) || 100;
+    const embeddingModel = genAISettings.embeddingsGenerationModel || 'amazon.titan-embed-text-v2:0';
+    const embeddingDimensions = parseInt(genAISettings.embeddingsModelDimentions) || 1024;
 
     // 3. Chunk the extracted text
     const chunks = chunkerService.chunkText(scraped.cleanText, chunkSize, chunkOverlap);
@@ -279,20 +272,15 @@ class RagService {
     const cleanBotId = await this.resolveCanonicalBotId(botId, tenantDb);
     const vectorIndexName = `${cleanTenantId.replace(/\s+/g, '_')}_${cleanBotId.replace(/\s+/g, '_')}`;
 
-    // 1. Fetch bot's genAISettings to get dimensions & model
-    let embeddingDimensions = 1024;
-    let embeddingModel = 'amazon.titan-embed-text-v2:0';
-    try {
-      const genAISettings = await tenantDb.collection('genAISettings').findOne({
-        $or: [{ botId: cleanBotId }, { chatBotFlag: cleanBotId }, { botId }]
-      });
-      if (genAISettings?.embeddingsModelDimentions) {
-        embeddingDimensions = parseInt(genAISettings.embeddingsModelDimentions);
-      }
-      if (genAISettings?.embeddingsGenerationModel) {
-        embeddingModel = genAISettings.embeddingsGenerationModel;
-      }
-    } catch (e) {}
+    // 1. Fetch bot's genAISettings from tenant database
+    const genAISettings = await genAISettingsService.getSettings({
+      tenantId: cleanTenantId,
+      botId: cleanBotId,
+      tenantDbName
+    });
+
+    const embeddingDimensions = parseInt(genAISettings.embeddingsModelDimentions) || 1024;
+    const embeddingModel = genAISettings.embeddingsGenerationModel || 'amazon.titan-embed-text-v2:0';
 
     // 2. Generate vector embedding for the search query
     const queryEmbedding = await embeddingService.generateEmbedding(query, embeddingModel, embeddingDimensions);

@@ -76,6 +76,42 @@ class AuthController {
     }
   }
 
+  // Helper: Resolve allowed analytics widgets for user/role
+  async resolveAllowedWidgets(userRole, tenantId) {
+    const ALL_WIDGET_IDS = [
+      'total_questions', 'total_sessions', 'avg_questions_day', 'avg_questions_session',
+      'avg_session_length', 'csat_score', 'thumbs_up_score', 'avg_latency', 'token_usage',
+      'daily_trend_chart', 'top_intents_chart', 'sentiment_donut_chart', 'hourly_heatmap_chart',
+      'csat_breakdown_chart', 'top_queries_table', 'recent_sessions_table'
+    ];
+
+    try {
+      if (userRole === 'Super Admin' || userRole === 'super_admin' || userRole === 'global_admin' || !tenantId) {
+        return ALL_WIDGET_IDS;
+      }
+
+      const masterDb = this.getMasterDb();
+      const roleQuery = (userRole || '').toLowerCase().replace(/\s+/g, '_');
+      const roleDoc = await masterDb.collection('roles').findOne({
+        $or: [
+          { roleId: userRole },
+          { roleName: userRole },
+          { roleId: roleQuery }
+        ]
+      });
+
+      if (roleDoc && Array.isArray(roleDoc.allowedWidgets) && roleDoc.allowedWidgets.length > 0) {
+        return roleDoc.allowedWidgets;
+      }
+
+      return ALL_WIDGET_IDS;
+    } catch (err) {
+      logger.error(`Error resolving allowed widgets: ${err.message}`);
+      return ALL_WIDGET_IDS;
+    }
+  }
+
+
   // ==========================================
   // AUTH: LOGIN & SESSION CREATION
   // ==========================================
@@ -186,8 +222,9 @@ class AuthController {
         return res.status(401).json({ error: 'Invalid username or password.' });
       }
 
-      // Resolve allowed menus dynamically
+      // Resolve allowed menus & analytics widgets dynamically
       const allowedMenus = await this.resolveAllowedMenus(authenticatedUser.role, authenticatedUser.tenantId);
+      const allowedWidgets = await this.resolveAllowedWidgets(authenticatedUser.role, authenticatedUser.tenantId);
 
       if (authenticatedUser.tenantId && !targetTenantName) {
         const t = await Tenant.findById(authenticatedUser.tenantId);
@@ -220,7 +257,7 @@ class AuthController {
       await sessionCol.insertOne(sessionDoc);
       logger.info(`Session created for user "${authenticatedUser.username}" (sessionId: ${sessionId}) in master.sessionManagement`);
 
-      // Return sanitized user profile WITH sessionId
+      // Return sanitized user profile WITH sessionId and allowedWidgets
       return res.json({
         sessionId,
         username: authenticatedUser.username,
@@ -232,6 +269,7 @@ class AuthController {
         phone: authenticatedUser.phone || '',
         photo: authenticatedUser.photo || '',
         allowedMenus,
+        allowedWidgets,
         loginTime: now,
         lastActivityTime: now
       });
@@ -296,8 +334,9 @@ class AuthController {
       const masterDb = this.getMasterDb();
       const masterUser = await masterDb.collection('users').findOne({ username: session.username });
 
-      // Refresh allowed menus dynamically
+      // Refresh allowed menus & analytics widgets dynamically
       const allowedMenus = await this.resolveAllowedMenus(session.role, session.tenantId);
+      const allowedWidgets = await this.resolveAllowedWidgets(session.role, session.tenantId);
 
       return res.json({
         active: true,
@@ -313,6 +352,7 @@ class AuthController {
           phone: masterUser?.phone || '',
           photo: masterUser?.photo || '',
           allowedMenus,
+          allowedWidgets,
           loginTime: session.loginTime,
           lastActivityTime: currentDate
         }

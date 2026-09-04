@@ -3,28 +3,9 @@ const { Bot, Analytics } = require('../models');
 class ClientController {
   async getAnalytics(req, res, next) {
     try {
-      let analytics = await Analytics.findOne({ botId: req.params.id });
-      if (!analytics) {
-        const mockDaily = [];
-        const now = new Date();
-        for (let i = 13; i >= 0; i--) {
-          const d = new Date(now);
-          d.setDate(now.getDate() - i);
-          mockDaily.push({
-            date: d.toISOString().split('T')[0],
-            conversations: 0,
-            messages: 0
-          });
-        }
-        analytics = {
-          botId: req.params.id,
-          summary: { totalConversations: 0, totalMessages: 0, avgResponseTime: 0, userSatisfaction: 0, activeUsers: 0 },
-          tokenUsage: { promptTokens: 0, completionTokens: 0 },
-          dailyActivity: mockDaily,
-          topQueries: []
-        };
-      }
-      return res.json(analytics);
+      const adminController = require('./adminController');
+      req.query.botId = req.params.id || req.query.botId;
+      return adminController.getAnalyticsDashboard(req, res, next);
     } catch (err) {
       next(err);
     }
