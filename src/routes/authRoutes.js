@@ -36,4 +36,13 @@ router.get('/roles', (req, res, next) => authController.getRoles(req, res, next)
 router.post('/roles', (req, res, next) => authController.createOrUpdateRole(req, res, next));
 router.delete('/roles/:id', (req, res, next) => authController.deleteRole(req, res, next));
 
+// User Profile Management
+router.get('/auth/profile', (req, res, next) => authController.getProfile(req, res, next));
+router.put('/auth/profile', (req, res, next) => authController.updateProfile(req, res, next));
+router.post('/auth/profile', (req, res, next) => authController.updateProfile(req, res, next));
+router.get('/profile', (req, res, next) => authController.getProfile(req, res, next));
+router.put('/profile', (req, res, next) => authController.updateProfile(req, res, next));
+router.post('/profile', (req, res, next) => authController.updateProfile(req, res, next));
+
 module.exports = router;
+

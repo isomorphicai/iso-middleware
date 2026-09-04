@@ -1146,7 +1146,7 @@ class AdminController {
    */
   async getConversations(req, res, next) {
     try {
-      const { tenantId, botId, status, search, limit = 50, page = 1 } = req.query;
+      const { tenantId, botId, status, search, startDate, endDate, limit = 100, page = 1 } = req.query;
       const client = mongoose.connection?.client 
         || (mongoose.connection && typeof mongoose.connection.getClient === 'function' && mongoose.connection.getClient())
         || (mongoose.connections && mongoose.connections[0] && mongoose.connections[0].client);
@@ -1164,9 +1164,56 @@ class AdminController {
       if (status && status !== 'all') {
         match.sessionStatus = status;
       }
+      if (startDate || endDate) {
+        const startISO = startDate ? new Date(startDate).toISOString() : null;
+        const endISO = endDate ? new Date(endDate.length === 10 ? `${endDate}T23:59:59.999Z` : endDate).toISOString() : null;
+        const startDateObj = startISO ? new Date(startISO) : null;
+        const endDateObj = endISO ? new Date(endISO) : null;
+
+        const dateConds = [];
+        if (startISO && endISO) {
+          dateConds.push(
+            { createdAt: { $gte: startISO, $lte: endISO } },
+            { createdAt: { $gte: startDateObj, $lte: endDateObj } },
+            { sessionStartAt: { $gte: startISO, $lte: endISO } },
+            { sessionStartAt: { $gte: startDateObj, $lte: endDateObj } }
+          );
+        } else if (startISO) {
+          dateConds.push(
+            { createdAt: { $gte: startISO } },
+            { createdAt: { $gte: startDateObj } },
+            { sessionStartAt: { $gte: startISO } },
+            { sessionStartAt: { $gte: startDateObj } }
+          );
+        } else if (endISO) {
+          dateConds.push(
+            { createdAt: { $lte: endISO } },
+            { createdAt: { $lte: endDateObj } },
+            { sessionStartAt: { $lte: endISO } },
+            { sessionStartAt: { $lte: endDateObj } }
+          );
+        }
+
+        if (dateConds.length > 0) {
+          if (match.$or) {
+            match.$and = [{ $or: match.$or }, { $or: dateConds }];
+            delete match.$or;
+          } else {
+            match.$or = dateConds;
+          }
+        }
+      }
       if (search && search.trim()) {
         const regex = new RegExp(search.trim(), 'i');
-        match.$or = [{ query: regex }, { answer: regex }, { sessionId: regex }];
+        const searchConds = [{ query: regex }, { answer: regex }, { sessionId: regex }];
+        if (match.$or) {
+          match.$and = match.$and || [];
+          match.$and.push({ $or: match.$or });
+          match.$and.push({ $or: searchConds });
+          delete match.$or;
+        } else {
+          match.$or = searchConds;
+        }
       }
 
       const pipeline = [

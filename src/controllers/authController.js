@@ -148,82 +148,49 @@ class AuthController {
         return cleanPassword === stored;
       };
 
-      // 1. Check master > users collection (Primary user store in Atlas)
-      const masterUser = await masterDb.collection('users').findOne({ 
-        $or: [{ username: cleanUsername }, { username: userRegex }] 
-      });
-      if (masterUser && checkPass(masterUser.password)) {
-        authenticatedUser = {
-          username: masterUser.username,
-          role: masterUser.role || 'global_admin',
-          tenantId: masterUser.tenantId || null,
-          fullName: masterUser.fullName || masterUser.username,
-          email: masterUser.email || `${masterUser.username}@isomorphic.com`,
-          phone: masterUser.phone || '',
-          photo: masterUser.photo || ''
-        };
-      }
-
-      // 2. Check default User collection if not found
-      if (!authenticatedUser) {
-        let user = await User.findOne({ 
-          $or: [{ username: cleanUsername }, { username: userRegex }] 
-        });
-        if (user && checkPass(user.password)) {
-          authenticatedUser = {
-            username: user.username,
-            role: user.role,
-            tenantId: user.tenantId,
-            fullName: user.fullName || user.username,
-            email: user.email || `${user.username}@isomorphic.com`,
-            phone: user.phone || '',
-            photo: user.photo || ''
-          };
-        }
-      }
-
-      // 3. Check tenant-specific databases (iso_<tenantId> > users)
-      if (!authenticatedUser) {
-        const allTenants = await masterDb.collection('tenantInfo').find({}).toArray();
-        for (const t of allTenants) {
-          try {
-            const tDb = mongoose.connection.useDb(t.tenantDbName || `iso_${t.tenantId}`, { useCache: true });
-            const tUser = await tDb.collection('users').findOne({ 
-              $or: [{ username: cleanUsername }, { username: userRegex }] 
-            });
-            if (tUser && checkPass(tUser.password)) {
-              authenticatedUser = {
-                username: tUser.username,
-                role: tUser.role || 'tenant_admin',
-                tenantId: t.tenantId || t._id?.toString(),
-                tenantName: t.name || t.tenantName,
-                fullName: tUser.fullName || tUser.username,
-                email: tUser.email || `${tUser.username}@${t.tenantId}.com`,
-                phone: '',
-                photo: ''
-              };
-              targetTenantName = t.name || t.tenantName;
-              break;
-            }
-          } catch (e) {
-            // continue checking
+      // 1. Search dynamic tenant databases (iso_<tenantId> > users)
+      const allTenants = await masterDb.collection('tenantInfo').find({}).toArray();
+      for (const t of allTenants) {
+        try {
+          const tDbName = t.tenantDbName || (t.tenantId ? `iso_${t.tenantId}` : null);
+          if (!tDbName) continue;
+          const tDb = mongoose.connection.useDb(tDbName, { useCache: true });
+          const tUser = await tDb.collection('users').findOne({ 
+            $or: [{ username: cleanUsername }, { username: userRegex }] 
+          });
+          if (tUser && checkPass(tUser.password)) {
+            authenticatedUser = {
+              username: tUser.username,
+              role: tUser.role || (t.tenantId === 'admin' ? 'global_admin' : 'tenant_admin'),
+              tenantId: t.tenantId || t._id?.toString(),
+              tenantName: t.tenantName || t.name || t.tenantId,
+              fullName: tUser.fullName || tUser.username,
+              email: tUser.email || `${tUser.username}@${t.tenantId}.com`,
+              phone: tUser.phone || '',
+              photo: tUser.photo || ''
+            };
+            targetTenantName = t.tenantName || t.name || t.tenantId;
+            break;
           }
+        } catch (e) {
+          // continue checking
         }
       }
 
-      // 4. Default fallback for standard demo admin
+      // 2. Default fallback for standard demo admin if db not populated
       if (!authenticatedUser) {
         if (cleanUsername.toLowerCase() === 'admin' && (cleanPassword === 'admin123' || cleanPassword === 'password' || cleanPassword === 'password123' || cleanPassword === 'admin')) {
           authenticatedUser = {
             username: 'admin',
             role: 'global_admin',
-            tenantId: null,
-            tenantName: null,
+            tenantId: 'admin',
+            tenantName: 'admin',
             fullName: 'Super Administrator',
             email: 'admin@isomorphic.com',
             phone: '',
             photo: ''
           };
+          targetTenantName = 'admin';
         }
       }
 
@@ -254,6 +221,8 @@ class AuthController {
         role: authenticatedUser.role || 'global_admin',
         fullName: authenticatedUser.fullName || authenticatedUser.username,
         email: authenticatedUser.email || `${authenticatedUser.username}@isomorphic.com`,
+        phone: authenticatedUser.phone || '',
+        photo: authenticatedUser.photo || '',
         loginTime: now,
         lastActivityTime: now,
         isActive: true,
@@ -349,9 +318,29 @@ class AuthController {
         }
       ).catch(() => {});
 
-      // Re-fetch master user record to get any updated full name / photo / phone
-      const masterDb = this.getMasterDb();
-      const masterUser = await masterDb.collection('users').findOne({ username: session.username });
+      // Re-fetch user record from tenant database to get any updated full name / photo / phone
+      let tenantUser = null;
+      if (session.tenantId) {
+        const targetDbName = session.tenantId.startsWith('iso_') ? session.tenantId : `iso_${session.tenantId}`;
+        const tDb = mongoose.connection.useDb(targetDbName, { useCache: true });
+        tenantUser = await tDb.collection('users').findOne({ username: session.username });
+      }
+      if (!tenantUser) {
+        const masterDb = this.getMasterDb();
+        const allTenants = await masterDb.collection('tenantInfo').find({}).toArray();
+        for (const t of allTenants) {
+          try {
+            const tDbName = t.tenantDbName || (t.tenantId ? `iso_${t.tenantId}` : null);
+            if (!tDbName) continue;
+            const tDb = mongoose.connection.useDb(tDbName, { useCache: true });
+            const u = await tDb.collection('users').findOne({ username: session.username });
+            if (u) {
+              tenantUser = u;
+              break;
+            }
+          } catch (e) {}
+        }
+      }
 
       // Refresh allowed menus & analytics widgets dynamically
       const allowedMenus = await this.resolveAllowedMenus(session.role, session.tenantId);
@@ -366,10 +355,10 @@ class AuthController {
           role: session.role,
           tenantId: session.tenantId,
           tenantName: session.tenantName,
-          fullName: masterUser?.fullName || session.fullName || session.username,
-          email: masterUser?.email || session.email || `${session.username}@isomorphic.com`,
-          phone: masterUser?.phone || '',
-          photo: masterUser?.photo || '',
+          fullName: tenantUser?.fullName || session.fullName || session.username,
+          email: tenantUser?.email || session.email || `${session.username}@isomorphic.com`,
+          phone: tenantUser?.phone || session.phone || '',
+          photo: tenantUser?.photo || session.photo || '',
           allowedMenus,
           allowedWidgets,
           loginTime: session.loginTime,
@@ -611,6 +600,224 @@ class AuthController {
       next(err);
     }
   }
+
+  /**
+   * GET /api/auth/profile
+   * Fetch current user profile from master > users or tenantDb > users
+   */
+  async getProfile(req, res, next) {
+    try {
+      const sessionId = req.headers['x-session-id'] || req.query?.sessionId;
+      let username = req.query?.username;
+      let userRole = null;
+      let tenantId = null;
+
+      if (sessionId) {
+        const sessionCol = this.getSessionCollection();
+        const session = await sessionCol.findOne({ sessionId });
+        if (session) {
+          if (session.username) username = session.username;
+          userRole = session.role;
+          tenantId = session.tenantId;
+        }
+      }
+
+      if (!username) {
+        return res.status(400).json({ error: 'Username or active session is required.' });
+      }
+
+      const masterDb = this.getMasterDb();
+      let user = null;
+      let sourceDb = null;
+
+      // If tenantId is known, check that tenant db first
+      if (tenantId) {
+        const targetDbName = tenantId.startsWith('iso_') ? tenantId : `iso_${tenantId}`;
+        const tDb = mongoose.connection.useDb(targetDbName, { useCache: true });
+        user = await tDb.collection('users').findOne({ username });
+        if (user) {
+          sourceDb = targetDbName;
+        }
+      }
+
+      // If not found yet, scan all registered tenant databases
+      if (!user) {
+        const allTenants = await masterDb.collection('tenantInfo').find({}).toArray();
+        for (const t of allTenants) {
+          try {
+            const tDbName = t.tenantDbName || (t.tenantId ? `iso_${t.tenantId}` : null);
+            if (!tDbName) continue;
+            const tDb = mongoose.connection.useDb(tDbName, { useCache: true });
+            const tUser = await tDb.collection('users').findOne({ username });
+            if (tUser) {
+              user = tUser;
+              sourceDb = tDbName;
+              tenantId = t.tenantId || t.code;
+              break;
+            }
+          } catch (e) {}
+        }
+      }
+
+      if (!user) {
+        return res.status(404).json({ error: `User "${username}" not found in database.` });
+      }
+
+      return res.json({
+        success: true,
+        user: {
+          username: user.username,
+          fullName: user.fullName || user.username,
+          email: user.email || `${user.username}@isomorphic.com`,
+          phone: user.phone || '',
+          photo: user.photo || '',
+          role: user.role || userRole || (tenantId === 'admin' ? 'global_admin' : 'tenant_admin'),
+          tenantId: user.tenantId || tenantId || null,
+          title: user.title || (user.role === 'global_admin' || tenantId === 'admin' ? 'Principal Systems Architect' : 'Tenant Administrator'),
+          bio: user.bio || '',
+          status: user.status || 'active',
+          sourceDb
+        }
+      });
+    } catch (err) {
+      logger.error(`Error fetching user profile: ${err.message}`);
+      next(err);
+    }
+  }
+
+  /**
+   * PUT /api/auth/profile
+   * Update current user profile in tenantDb > users and active sessions
+   */
+  async updateProfile(req, res, next) {
+    try {
+      const sessionId = req.headers['x-session-id'] || req.body?.sessionId;
+      const { fullName, email, phone, photo, title, bio } = req.body;
+
+      let targetUsername = req.body?.username;
+      let userRole = 'global_admin';
+      let userTenantId = null;
+      const sessionCol = this.getSessionCollection();
+
+      if (sessionId) {
+        const session = await sessionCol.findOne({ sessionId });
+        if (session) {
+          if (session.username) targetUsername = session.username;
+          if (session.role) userRole = session.role;
+          if (session.tenantId) userTenantId = session.tenantId;
+        }
+      }
+
+      if (!targetUsername) {
+        return res.status(400).json({ error: 'Username or active session is required to update profile.' });
+      }
+
+      const masterDb = this.getMasterDb();
+      const updateData = { updatedAt: new Date() };
+      if (fullName !== undefined) updateData.fullName = fullName.trim();
+      if (email !== undefined) updateData.email = email.trim();
+      if (phone !== undefined) updateData.phone = phone.trim();
+      if (photo !== undefined) updateData.photo = photo;
+      if (title !== undefined) updateData.title = title.trim();
+      if (bio !== undefined) updateData.bio = bio;
+
+      let updatedDoc = null;
+
+      // Update in tenant databases
+      const allTenants = await masterDb.collection('tenantInfo').find({}).toArray();
+      for (const t of allTenants) {
+        try {
+          const tDbName = t.tenantDbName || (t.tenantId ? `iso_${t.tenantId}` : null);
+          if (!tDbName) continue;
+          const tDb = mongoose.connection.useDb(tDbName, { useCache: true });
+          const tUser = await tDb.collection('users').findOne({ username: targetUsername });
+          if (tUser) {
+            const tResult = await tDb.collection('users').findOneAndUpdate(
+              { username: targetUsername },
+              { $set: updateData },
+              { returnDocument: 'after' }
+            );
+            if (!updatedDoc) {
+              // In native MongoDB driver v4+, returnDocument: 'after' returns document directly or in .value
+              const doc = (tResult && tResult.value !== undefined) ? tResult.value : tResult;
+              updatedDoc = doc || { ...tUser, ...updateData };
+              userTenantId = t.tenantId;
+              userRole = tUser.role || userRole;
+            }
+          }
+        } catch (e) {
+          logger.error(`Error updating user in tenant ${t.tenantId}: ${e.message}`);
+        }
+      }
+
+      // If user wasn't in any registered tenant db yet, search all iso_* databases
+      if (!updatedDoc) {
+        try {
+          const adminDbs = await mongoose.connection.db.admin().listDatabases();
+          for (const d of adminDbs.databases) {
+            if (d.name.startsWith('iso_')) {
+              const tDb = mongoose.connection.useDb(d.name, { useCache: true });
+              const tUser = await tDb.collection('users').findOne({ username: targetUsername });
+              if (tUser) {
+                const tResult = await tDb.collection('users').findOneAndUpdate(
+                  { username: targetUsername },
+                  { $set: updateData },
+                  { returnDocument: 'after' }
+                );
+                const doc = (tResult && tResult.value !== undefined) ? tResult.value : tResult;
+                updatedDoc = doc || { ...tUser, ...updateData };
+                userTenantId = d.name.replace(/^iso_/, '');
+                userRole = tUser.role || userRole;
+                break;
+              }
+            }
+          }
+        } catch (e) {}
+      }
+
+      // 3. Update active session records in sessionManagement
+      await sessionCol.updateMany(
+        { username: targetUsername },
+        { 
+          $set: { 
+            fullName: updateData.fullName,
+            email: updateData.email,
+            phone: updateData.phone,
+            photo: updateData.photo,
+            updatedAt: new Date()
+          } 
+        }
+      );
+
+      // Invalidate session cache in Redis
+      if (sessionId) {
+        await cacheService.del(`session:token:${sessionId}`);
+      }
+
+      const finalUser = updatedDoc || updateData;
+
+      logger.info(`Profile updated for user "${targetUsername}"`);
+      return res.json({
+        success: true,
+        message: 'Profile updated successfully.',
+        user: {
+          username: targetUsername,
+          fullName: finalUser.fullName || updateData.fullName || targetUsername,
+          email: finalUser.email || updateData.email,
+          phone: finalUser.phone || updateData.phone || '',
+          photo: finalUser.photo !== undefined ? finalUser.photo : updateData.photo,
+          title: finalUser.title || updateData.title || 'Principal Systems Architect',
+          bio: finalUser.bio || updateData.bio || '',
+          role: finalUser.role || userRole,
+          tenantId: finalUser.tenantId || userTenantId
+        }
+      });
+    } catch (err) {
+      logger.error(`Error updating user profile: ${err.message}`);
+      next(err);
+    }
+  }
 }
 
 module.exports = new AuthController();
+
