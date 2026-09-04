@@ -155,6 +155,7 @@ class AdminController {
       };
 
       logger.info(`Created new tenant "${finalName}" in master.tenantInfo with db "${finalDbName}"`);
+      await cacheService.del('portal:tenants');
 
       // =========================================================================
       // Initialize dynamic tenant DB collections (chatClientSettings, chatClients, genAISettings)
@@ -302,6 +303,7 @@ class AdminController {
       };
 
       logger.info(`Updated tenant "${normalized.name}" in master.tenantInfo`);
+      await cacheService.del('portal:tenants');
       return res.json(normalized);
     } catch (err) {
       logger.error(`Error updating tenant in master.tenantInfo: ${err.message}`);
@@ -331,6 +333,7 @@ class AdminController {
       }
 
       await col.deleteOne(filter);
+      await cacheService.del('portal:tenants');
       logger.info(`Deleted tenant "${tenantToDelete.tenantName || tenantToDelete.tenantId}" from master.tenantInfo`);
       return res.json({ message: `Tenant "${tenantToDelete.tenantName || tenantToDelete.tenantId}" deleted successfully.` });
     } catch (err) {
