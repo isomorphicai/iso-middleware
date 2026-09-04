@@ -46,6 +46,9 @@ const DEFAULT_BOT_UI_CONFIGS = {
   helpButtonUrl: 'https://vsc.blackbelthelp.com/help',
   poweredBy: 'AI powered by <span>Isomorphic</span>',
   welcomeMessage: 'Hi! I’m your AI assistant. How can I assist you today?',
+  surveySubmitButtonText: 'Submit Feedback',
+  surveySubmitButtonColor: '',
+  surveySubmitButtonTextColor: '',
   notifications: []
 };
 
