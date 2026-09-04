@@ -7,6 +7,7 @@ const FormSubmission = require('./FormSubmission');
 const Analytics = require('./Analytics');
 const User = require('./User');
 const RolePermission = require('./RolePermission');
+const SessionManagement = require('./SessionManagement');
 
 module.exports = {
   Tenant,
@@ -17,5 +18,7 @@ module.exports = {
   FormSubmission,
   Analytics,
   User,
-  RolePermission
+  RolePermission,
+  SessionManagement
 };
+
