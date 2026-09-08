@@ -138,6 +138,7 @@ class AuthController {
       const masterDb = this.getMasterDb();
       let authenticatedUser = null;
       let targetTenantName = null;
+      let targetTenantConfig = {};
 
       // Helper: Verify password with bcrypt or plaintext fallback
       const checkPass = (stored) => {
@@ -167,9 +168,11 @@ class AuthController {
               fullName: tUser.fullName || tUser.username,
               email: tUser.email || `${tUser.username}@${t.tenantId}.com`,
               phone: tUser.phone || '',
-              photo: tUser.photo || ''
+              photo: tUser.photo || '',
+              tenantConfig: t.tenantConfig || {}
             };
             targetTenantName = t.tenantName || t.name || t.tenantId;
+            targetTenantConfig = t.tenantConfig || {};
             break;
           }
         } catch (e) {
@@ -188,7 +191,8 @@ class AuthController {
             fullName: 'Super Administrator',
             email: 'admin@isomorphic.com',
             phone: '',
-            photo: ''
+            photo: '',
+            tenantConfig: {}
           };
           targetTenantName = 'admin';
         }
@@ -204,7 +208,10 @@ class AuthController {
 
       if (authenticatedUser.tenantId && !targetTenantName) {
         const t = await Tenant.findById(authenticatedUser.tenantId);
-        if (t) targetTenantName = t.name || t.tenantName;
+        if (t) {
+          targetTenantName = t.name || t.tenantName;
+          targetTenantConfig = t.tenantConfig || (t.settings ? { theme: t.settings.theme } : {});
+        }
       }
 
       // Generate a new unique session ID
@@ -218,6 +225,7 @@ class AuthController {
         username: authenticatedUser.username,
         tenantId: authenticatedUser.tenantId || null,
         tenantName: targetTenantName || authenticatedUser.tenantName || null,
+        tenantConfig: targetTenantConfig || authenticatedUser.tenantConfig || {},
         role: authenticatedUser.role || 'global_admin',
         fullName: authenticatedUser.fullName || authenticatedUser.username,
         email: authenticatedUser.email || `${authenticatedUser.username}@isomorphic.com`,
@@ -235,13 +243,14 @@ class AuthController {
       await sessionCol.insertOne(sessionDoc);
       logger.info(`Session created for user "${authenticatedUser.username}" (sessionId: ${sessionId}) in master.sessionManagement`);
 
-      // Return sanitized user profile WITH sessionId and allowedWidgets
+      // Return sanitized user profile WITH sessionId, allowedWidgets, and tenantConfig
       return res.json({
         sessionId,
         username: authenticatedUser.username,
         role: authenticatedUser.role,
         tenantId: authenticatedUser.tenantId,
         tenantName: targetTenantName || authenticatedUser.tenantName,
+        tenantConfig: targetTenantConfig || authenticatedUser.tenantConfig || {},
         fullName: authenticatedUser.fullName || 'System Administrator',
         email: authenticatedUser.email || `${authenticatedUser.username}@isomorphic.com`,
         phone: authenticatedUser.phone || '',
@@ -346,6 +355,24 @@ class AuthController {
       const allowedMenus = await this.resolveAllowedMenus(session.role, session.tenantId);
       const allowedWidgets = await this.resolveAllowedWidgets(session.role, session.tenantId);
 
+      // Resolve tenantConfig from master.tenantInfo
+      let targetTenantConfig = session.tenantConfig || {};
+      if (session.tenantId) {
+        try {
+          const masterDb = this.getMasterDb();
+          const tDoc = await masterDb.collection('tenantInfo').findOne({
+            $or: [
+              { tenantId: session.tenantId },
+              { code: session.tenantId },
+              ...(mongoose.Types.ObjectId.isValid(session.tenantId) ? [{ _id: new mongoose.Types.ObjectId(session.tenantId) }] : [])
+            ]
+          });
+          if (tDoc && tDoc.tenantConfig) {
+            targetTenantConfig = tDoc.tenantConfig;
+          }
+        } catch (tErr) {}
+      }
+
       const responsePayload = {
         active: true,
         sessionId: session.sessionId,
@@ -355,6 +382,7 @@ class AuthController {
           role: session.role,
           tenantId: session.tenantId,
           tenantName: session.tenantName,
+          tenantConfig: targetTenantConfig,
           fullName: tenantUser?.fullName || session.fullName || session.username,
           email: tenantUser?.email || session.email || `${session.username}@isomorphic.com`,
           phone: tenantUser?.phone || session.phone || '',
