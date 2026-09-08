@@ -84,29 +84,57 @@ class LLMService {
    */
   generateSmartFallback(messages) {
     const userMsg = messages.filter(m => m.role === 'user').pop()?.content || '';
-    const systemMsg = messages.find(m => m.role === 'system')?.content || '';
+    const allText = messages.map(m => m.content || '').join('\n');
 
-    // Extract context documents block
-    const contextMatch = systemMsg.match(/=== RETRIEVED KNOWLEDGE BASE DOCUMENTS ===\n([\s\S]*?)(?:\n===|\nINSTRUCTIONS:|$)/i);
-    const contextBlock = contextMatch ? contextMatch[1] : '';
+    // Extract context documents block from <context> tags or markdown headers
+    let contextBlock = '';
+    const xmlMatch = allText.match(/<context>([\s\S]*?)<\/context>/i);
+    if (xmlMatch) {
+      contextBlock = xmlMatch[1];
+    } else {
+      const bannerMatch = allText.match(/=== RETRIEVED KNOWLEDGE BASE DOCUMENTS ===\n([\s\S]*?)(?:\n===|\nINSTRUCTIONS:|$)/i);
+      if (bannerMatch) {
+        contextBlock = bannerMatch[1];
+      }
+    }
 
     if (contextBlock && contextBlock.trim().length > 10) {
       const docSnippets = contextBlock
-        .split(/\[Document \d+ - Title:.*?\]/i)
+        .split(/(?:\[(?:Document|Source)\s*\d+[^\]]*\])/i)
         .map(s => s.trim())
         .filter(s => s.length > 5);
 
       const relevantSentences = [];
       const queryWords = userMsg.toLowerCase().match(/[\w]+/g) || [];
-      const stopwords = new Set(['what', 'is', 'the', 'this', 'that', 'how', 'why', 'where', 'when', 'for', 'are', 'you', 'can', 'used', 'does', 'in', 'on', 'at', 'to', 'a', 'an']);
-      const keywords = queryWords.filter(w => !stopwords.has(w) && w.length > 2);
+      const stopwords = new Set(['what', 'is', 'the', 'this', 'that', 'how', 'why', 'where', 'when', 'for', 'are', 'you', 'can', 'used', 'does', 'in', 'on', 'at', 'to', 'a', 'an', 'who', 'tell', 'me', 'about']);
+      
+      // Expand query keywords with synonyms (e.g. founder <-> co-founder / cofounder)
+      const expandedKeywords = new Set();
+      for (const w of queryWords) {
+        if (!stopwords.has(w) && w.length > 2) {
+          expandedKeywords.add(w);
+          if (w === 'founder' || w === 'founders') {
+            expandedKeywords.add('co-founder');
+            expandedKeywords.add('cofounder');
+            expandedKeywords.add('co-founders');
+            expandedKeywords.add('cofounders');
+            expandedKeywords.add('founded');
+          }
+          if (w === 'cofounder' || w === 'co-founder') {
+            expandedKeywords.add('founder');
+            expandedKeywords.add('founders');
+          }
+        }
+      }
 
       for (const snippet of docSnippets) {
-        const sentences = snippet.split(/(?<=[.?!])\s+/).filter(Boolean);
+        // Strip out metadata lines like | Link: ...
+        const cleanSnippet = snippet.replace(/^[^:]+:.*?\n/gm, '');
+        const sentences = cleanSnippet.split(/(?<=[.?!])\s+/).filter(Boolean);
         for (const sentence of sentences) {
           const sLower = sentence.toLowerCase();
           let matchCount = 0;
-          for (const kw of keywords) {
+          for (const kw of expandedKeywords) {
             if (sLower.includes(kw)) matchCount++;
           }
           if (matchCount > 0 || docSnippets.length === 1) {
@@ -119,13 +147,13 @@ class LLMService {
 
       let synthesizedAnswer = '';
       if (relevantSentences.length > 0) {
-        const topSentences = relevantSentences.slice(0, 3).map(r => r.sentence);
+        const topSentences = Array.from(new Set(relevantSentences.slice(0, 4).map(r => r.sentence)));
         synthesizedAnswer = topSentences.join(' ');
       } else if (docSnippets.length > 0) {
-        synthesizedAnswer = docSnippets[0].slice(0, 300);
+        synthesizedAnswer = docSnippets[0].slice(0, 350);
       }
 
-      if (synthesizedAnswer) {
+      if (synthesizedAnswer && synthesizedAnswer.length > 10) {
         return {
           content: `${synthesizedAnswer}`,
           model: 'iso-rag-synthesizer',
@@ -133,6 +161,56 @@ class LLMService {
           tokens: { prompt: Math.round(userMsg.length / 4), completion: Math.round(synthesizedAnswer.length / 4) }
         };
       }
+    }
+
+    const userLower = userMsg.toLowerCase().trim();
+    if (/^(hi|hello|hey|greetings|good\s+morning|good\s+afternoon|good\s+evening)\b/i.test(userLower)) {
+      return {
+        content: `Hello! I'm your AI assistant. How can I help you today?`,
+        model: 'iso-engine',
+        provider: 'iso-engine',
+        tokens: { prompt: Math.round(userMsg.length / 4), completion: 20 }
+      };
+    }
+    if (/^(how\s+are\s+you|what's\s+up|how\s+r\s+u)\b/i.test(userLower)) {
+      return {
+        content: `I'm doing great, thank you! What questions can I answer for you today?`,
+        model: 'iso-engine',
+        provider: 'iso-engine',
+        tokens: { prompt: Math.round(userMsg.length / 4), completion: 20 }
+      };
+    }
+    if (/^(bye|goodbye|cya|take\s+care|end\s+chat)\b/i.test(userLower)) {
+      return {
+        content: `Thank you for chatting with us! Have a wonderful day. Goodbye! 👋`,
+        model: 'iso-engine',
+        provider: 'iso-engine',
+        tokens: { prompt: Math.round(userMsg.length / 4), completion: 20 }
+      };
+    }
+    if (/^(who\s+are\s+you|what\s+is\s+your\s+name|what\s+can\s+you\s+do|tell\s+me\s+about\s+yourself)\b/i.test(userLower)) {
+      return {
+        content: `I am your virtual AI assistant! I can answer questions, look up documentation, and help you find the information you need. What would you like to know?`,
+        model: 'iso-engine',
+        provider: 'iso-engine',
+        tokens: { prompt: Math.round(userMsg.length / 4), completion: 30 }
+      };
+    }
+    if (/^(thank\s+you|thanks|thx|appreciate\s+it|many\s+thanks)\b/i.test(userLower)) {
+      return {
+        content: `You're very welcome! Feel free to ask if you have any other questions.`,
+        model: 'iso-engine',
+        provider: 'iso-engine',
+        tokens: { prompt: Math.round(userMsg.length / 4), completion: 20 }
+      };
+    }
+    if (/^(ok|okay|cool|nice|great|awesome|got\s+it|alright|fine|perfect|understood)\b/i.test(userLower)) {
+      return {
+        content: `Sounds good! Let me know if there's anything else I can assist you with.`,
+        model: 'iso-engine',
+        provider: 'iso-engine',
+        tokens: { prompt: Math.round(userMsg.length / 4), completion: 20 }
+      };
     }
 
     return {

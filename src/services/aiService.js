@@ -59,7 +59,30 @@ class AIService {
 
     logger.info(`[AI Service] Intent detected: "${classification.intent}" (${classification.reason || 'N/A'})`);
 
-    // 1A. Smalltalk Handler
+    // 1A. End Chat Handler
+    if (classification.intent === 'end_chat') {
+      const endChatRes = await intentService.handleEndChat({
+        query,
+        bot,
+        history,
+        genAISettings
+      });
+      const latencyMs = Date.now() - startTime;
+      return {
+        text: endChatRes.text,
+        intent: 'end_chat',
+        isEndChat: true,
+        form: 'survey',
+        retrievedChunks: [],
+        sources: [],
+        tokens: endChatRes.tokens || { prompt: 20, completion: 25 },
+        latencyMs,
+        model: endChatRes.model || genAISettings.textGenerationModel || bot?.model || 'openai/gpt-oss-120b',
+        provider: 'groq/llm'
+      };
+    }
+
+    // 1B. Smalltalk Handler
     if (classification.intent === 'smalltalk') {
       const smalltalkRes = await intentService.handleSmalltalk({
         query,
@@ -80,7 +103,7 @@ class AIService {
       };
     }
 
-    // 1B. Ambiguous Query Handler
+    // 1C. Ambiguous Query Handler
     if (classification.intent === 'ambiguous') {
       const ambiguousRes = await intentService.handleAmbiguousQuery({
         query,
@@ -136,27 +159,35 @@ class AIService {
         if (c.sourceUrl && !uniqueSources.includes(c.sourceUrl)) {
           uniqueSources.push(c.sourceUrl);
         }
-        return `[Document ${i + 1} - Title: ${c.title} (Source: ${c.sourceUrl || 'Internal Knowledge'})]\n${c.text}`;
+        const sourceUrl = c.sourceUrl ? ` | Link: ${c.sourceUrl}` : '';
+        const title = c.title || 'Knowledge Resource';
+        return `[Document ${i + 1}: ${title}${sourceUrl}]\n${c.text}`;
       }).join('\n\n');
     } else {
       contextText = 'No specific knowledge base documents retrieved.';
     }
 
-    // Format chat history according to genAISettings
+    // Format chat history according to genAISettings ("History Turns Limit")
     let historyContext = '';
     const includeHistory = genAISettings.includeConversationHistoryInAnswerGeneration !== false;
-    const historyLimit = parseInt(genAISettings.conversationHistoryLimit) || 4;
+    const historyLimit = parseInt(genAISettings.conversationHistoryLimit ?? genAISettings.historyTurnsLimit ?? 5);
 
     const historyMessages = [];
     if (includeHistory && Array.isArray(history) && history.length > 0) {
-      const recentHistory = history.slice(-historyLimit);
+      const maxMessages = Math.max(1, historyLimit) * 2;
+      const recentHistory = history.slice(-maxMessages);
       recentHistory.forEach(h => {
-        historyMessages.push({
-          role: h.role === 'user' || h.sender === 'user' ? 'user' : 'assistant',
-          content: h.content || h.text || h.response || ''
-        });
+        const isUser = h.role === 'user' || h.sender === 'user';
+        const rawContent = h.content || h.text || h.response || h.userQuery || h.message || '';
+        const cleanContent = String(rawContent).replace(/<[^>]*>?/gm, '').trim();
+        if (cleanContent) {
+          historyMessages.push({
+            role: isUser ? 'user' : 'assistant',
+            content: cleanContent
+          });
+        }
       });
-      historyContext = recentHistory.map(h => `${h.role === 'user' || h.sender === 'user' ? 'User' : 'Assistant'}: ${h.content || h.text || h.response || ''}`).join('\n');
+      historyContext = historyMessages.map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content}`).join('\n');
     }
 
     // 1. Interpolate System Persona Prompt
@@ -200,6 +231,9 @@ class AIService {
     if (isExplicitFallback && retrievedChunks.length === 0 && genAISettings.defaultFallbackAnswer) {
       logger.info('[AI Service] LLM indicated no information and 0 chunks retrieved. Using defaultFallbackAnswer.');
       finalAnswer = genAISettings.defaultFallbackAnswer;
+    } else {
+      // Clean and properly format document citations into valid clickable markdown links
+      finalAnswer = this.formatAndSanitizeCitations(finalAnswer, retrievedChunks);
     }
 
     return {
@@ -213,6 +247,42 @@ class AIService {
       model: llmResult.model,
       provider: llmResult.provider
     };
+  }
+
+  /**
+   * Sanitizes ugly raw LLM citation markers (like 【Document 1】, [Document 1], 【source】)
+   * and maps them to valid clickable Markdown links if a source URL exists.
+   */
+  formatAndSanitizeCitations(text, retrievedChunks = []) {
+    if (!text || typeof text !== 'string') return text;
+
+    let sanitized = text;
+
+    // 1. Map 【Document N...】 or [Document N...] to markdown links if chunk has URL
+    sanitized = sanitized.replace(/【(?:Document|Source|Doc)?\s*(\d+)[^】]*】|\[(?:Document|Source|Doc)\s*(\d+)[^\]]*\]/gi, (match, p1, p2) => {
+      const idx = parseInt(p1 || p2, 10);
+      if (idx && retrievedChunks[idx - 1]) {
+        const chunk = retrievedChunks[idx - 1];
+        if (chunk.sourceUrl) {
+          const title = chunk.title || `Resource ${idx}`;
+          return ` [${title}](${chunk.sourceUrl})`;
+        }
+      }
+      return ''; // Strip if no valid URL to avoid ugly raw brackets
+    });
+
+    // 2. Strip leftover raw bracket tokens like 【...†source】 or 【...】 or [1†source]
+    sanitized = sanitized.replace(/【[^】]+】/g, '');
+    sanitized = sanitized.replace(/\s*\[\d+†source\]/gi, '');
+    sanitized = sanitized.replace(/\s*\[\d+:\d+†source\]/gi, '');
+
+    // 3. Fix double spaces and trailing punctuation artifacts
+    sanitized = sanitized
+      .replace(/\s+([.,;:!?])/g, '$1')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+
+    return sanitized;
   }
 }
 

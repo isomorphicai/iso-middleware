@@ -100,6 +100,7 @@ class ChatController {
         message: result.text,
         botName,
         form: result.form || null,
+        isEndChat: Boolean(result.isEndChat || result.intent === 'end_chat'),
         quickReplies: result.quickReplies || bot?.quickReplies || [],
         intent: result.intent || 'information_seeking',
         sources: result.sources || [],

@@ -1471,6 +1471,7 @@ class AdminController {
         
         if (rawIntent === 'information_seeking') label = 'General Knowledge / Q&A';
         if (rawIntent === 'smalltalk' || rawIntent.includes('greetings')) label = 'Greetings & Smalltalk';
+        if (rawIntent === 'end_chat') label = 'End Chat / Farewell';
         if (rawIntent === 'transfer_call') label = 'Live Agent Transfer';
         if (rawIntent === 'ambiguous') label = 'Ambiguous / Clarification';
 

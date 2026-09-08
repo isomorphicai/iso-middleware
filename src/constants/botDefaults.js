@@ -18,7 +18,7 @@ const DEFAULT_BOT_UI_CONFIGS = {
   helpNotificationRenderMsg: 'Hi! I am ISO AI Assistant. I can help answer your questions and resolve common issues.',
   idleStatMessages: [
     { message: 'I’m waiting for your next question', time: 180 },
-    { message: 'Since there was no response from your end, we are concluding this session. Feel free to re-initiate anytime!', time: 240 }
+    { message: 'Since there was no response, we are ending this chat session. Please re-initiate anytime.', time: 240 }
   ],
   chatPosition: 'fixed',
   chatPositionLeft: 'auto',

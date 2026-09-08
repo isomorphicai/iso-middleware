@@ -10,26 +10,37 @@ $$context
 
 User Question: $$userQuery
 
-CHATBOT FORMATTING & STYLE RULES:
-1. **Be Short & Crisp**: Answer in 2 to 4 concise bullet points or 1-2 short paragraphs. Avoid long walls of text or unnecessary essays.
+CHATBOT FORMATTING & CITATION RULES:
+1. **Short, Crisp & Professional**: Answer in 2 to 4 concise bullet points or 1-2 short, readable paragraphs. Avoid long unformatted blocks of text.
 2. **Formatting**:
-   - Use **bold** for key concepts and product/feature names.
-   - Use clean bullet points (• or -) for multiple items, steps, or features.
-   - Include markdown links like [Website Title](url) when referring to source documents.
-3. **Accuracy**: Base your answer on the knowledge documents above when available. If the answer is not in the documents, state what you know concisely and suggest contacting support.
-4. **Tone**: Warm, helpful, and conversational like a professional customer support chatbot.
+   - Use **bold** for important terms, key requirements, and deadlines.
+   - Use clean bullet points (• or -) for steps, lists, and features.
+3. **Valid Clickable Links (NO Raw Document Tags)**:
+   - DO NOT output raw citations like 【Document 1】, [Document 1], 【source】, or [1].
+   - When referring to pages, portals, or guidelines from the context, always include valid clickable markdown links: e.g. [Admissions Application Portal](https://...), [Financial Aid Details](https://...).
+   - Use meaningful link titles instead of raw URLs or bracket numbers.
+4. **Accuracy**: Ground your response in the provided context documents. If the context does not contain sufficient information, state what you know concisely and suggest contacting support.
+5. **Tone**: Warm, helpful, professional, and conversational.
 
 Answer:`;
 
-const DEFAULT_QUERY_REWRITE_PROMPT = `You are an expert search query expansion system for a RAG vector database.
-Given the conversation history and the user's latest query, generate 2-3 concise, high-recall search queries.
-- Query 1: Standalone version of the user query resolving pronouns (e.g. replacing "it", "they" with the specific topic discussed).
-- Query 2: Keyword-focused semantic search query emphasizing key concepts.
-- Query 3: Alternative phrasing or synonym-based search query.
+const DEFAULT_QUERY_REWRITE_PROMPT = `You are an expert search query reformulation and contextual query expansion system for a RAG knowledge retrieval system.
 
-Respond ONLY with a valid JSON array of 2-3 strings. Do not add markdown or extra commentary.
+Analyze the conversation history and the latest user query. Pay special attention to follow-up questions (e.g. queries using pronouns like "it", "they", "that", "this", or phrases like "how much does it cost?", "what are the requirements?", "how do I apply?", "where is that located?").
 
-Conversation History:
+Instructions:
+1. **Resolve Follow-ups & Ambiguities**:
+   - If the latest query is a follow-up or depends on previous chat context, resolve all pronouns and implied topics using the conversation history to formulate a complete, standalone query.
+   - Example: If the previous discussion was about "Financial Aid Application" and the user asks "what is the deadline?", Query 1 MUST be "What is the deadline for Financial Aid Application?".
+2. **Generate 2-3 High-Recall Search Queries**:
+   - Query 1: Fully self-contained, standalone question with all subjects/entities resolved.
+   - Query 2: Keyword-rich semantic query focusing on the core domain topics and actions.
+   - Query 3: Synonyms or alternative phrasing to maximize vector search retrieval.
+3. If the user query is already standalone, provide the query and 1-2 relevant semantic expansions.
+
+Respond ONLY with a valid JSON array of 2 to 3 strings. Do not add markdown or extra commentary.
+
+Conversation History (Recent Context):
 <conversation>
 $$chatHistory
 </conversation>
@@ -40,16 +51,22 @@ Output JSON:`;
 
 const DEFAULT_INTENT_PROMPT = `You are an intent classification engine for an enterprise customer assistant.
 Classify the user's query into EXACTLY ONE of these categories:
-1. SMALLTALK: Greetings, pleasantries, thanking, social chit-chat, or asking who the bot is.
-2. AMBIGUOUS: The query is too vague, underspecified, or unclear to look up specific documents (e.g. "tell me more", "how much is it?", "can I do that?").
-3. INFORMATION_SEEKING: Specific questions about products, services, documentation, FAQs, procedures, or domain knowledge.
+1. SMALLTALK: Greetings, pleasantries, casual chit-chat, asking how the bot is doing, compliments, gratitude, or asking who the bot is / what it can do.
+2. END_CHAT: The user wants to end, close, finish, exit the chat, or says goodbye (e.g. "bye", "goodbye", "end chat", "close chat", "exit", "I'm done", "see you", "talk to you later", "terminate conversation", "have a good day bye").
+3. AMBIGUOUS: The query is too vague, underspecified, or unclear to look up specific documents (e.g. "tell me more", "how much is it?", "can I do that?").
+4. INFORMATION_SEEKING: Specific questions about products, services, documentation, FAQs, procedures, or domain knowledge.
 
-Output ONLY valid JSON with keys "intent" ("smalltalk" | "ambiguous" | "information_seeking") and "reason".
+Output ONLY valid JSON with keys "intent" ("smalltalk" | "end_chat" | "ambiguous" | "information_seeking") and "reason".
 
 User Query: "$$userQuery"`;
 
-const DEFAULT_SMALLTALK_PROMPT = `You are $$tenantFullName virtual assistant ($$botName), a helpful and polite AI assistant.
-The user is engaging in friendly greeting or smalltalk. Respond warmly, concisely (1-2 sentences), and ask how you can help them today.`;
+const DEFAULT_SMALLTALK_PROMPT = `You are $$tenantFullName virtual assistant ($$botName), a friendly, helpful, intelligent, and engaging AI assistant.
+Respond naturally, contextually, and conversationally to the user's greeting, smalltalk, question, comment, or pleasantry.
+Keep your response concise (1-3 sentences), warm, and interactive.
+If they ask about you, your capabilities, how you are doing, or say hello/thanks, reply with a relevant, pleasant, and varied response, and invite them to ask any questions they have.`;
+
+const DEFAULT_END_CHAT_PROMPT = `You are $$tenantFullName virtual assistant ($$botName), a polite and helpful assistant.
+The user wants to end or exit the chat session. Give a warm, polite, and brief goodbye message (1-2 sentences) thanking them for chatting and wishing them a wonderful day.`;
 
 const DEFAULT_AMBIGUOUS_PROMPT = `You are $$tenantFullName virtual assistant ($$botName), a helpful AI assistant.
 The user's query "$$userQuery" is ambiguous or needs more details. Politely ask for clarification or offer 2-3 specific topics they might be asking about.`;
@@ -94,6 +111,7 @@ class GenAISettingsService {
       chatBotFlag: true,
       intentEnabled: [
         'smalltalk',
+        'end_chat',
         'ambiguous',
         'information_seeking',
         'transfer_call',
@@ -119,6 +137,7 @@ class GenAISettingsService {
       improvedQueryRewriterPrompt: 'You are a query planning assistant for a Retrieval Augmented Generation system.',
       intentClassificationPrompt: DEFAULT_INTENT_PROMPT,
       smalltalkPrompt: DEFAULT_SMALLTALK_PROMPT,
+      endChatPrompt: DEFAULT_END_CHAT_PROMPT,
       ambiguousPrompt: DEFAULT_AMBIGUOUS_PROMPT,
       fallbackTexts: DEFAULT_FALLBACK_TEXTS,
       defaultFallbackAnswer: DEFAULT_FALLBACK_ANSWER,

@@ -123,30 +123,75 @@ class RagSearchService {
       }
     }
 
-    // 4. Calculate KNN Cosine Similarity across all queries and find best match for each chunk
+    // 4. Calculate Hybrid KNN Vector & Keyword Similarity across all queries
     const chunkScoreMap = new Map();
 
     for (const chunk of chunks) {
       const chunkId = chunk._id.toString();
-      let bestScore = 0;
+      const chunkTextLower = (chunk.text || '').toLowerCase();
+      const chunkTitleLower = (chunk.metadata?.title || '').toLowerCase();
+
+      let vectorScore = 0;
+      let keywordScore = 0;
       let matchedQuery = '';
 
+      // 4A. Dense vector similarity
       if (Array.isArray(chunk.embedding) && chunk.embedding.length > 0) {
         for (const qObj of queryEmbeddings) {
           const sim = embeddingService.cosineSimilarity(qObj.embedding, chunk.embedding);
           const scorePercent = parseFloat((sim * 100).toFixed(2));
-          if (scorePercent > bestScore) {
-            bestScore = scorePercent;
+          if (scorePercent > vectorScore) {
+            vectorScore = scorePercent;
             matchedQuery = qObj.query;
           }
         }
-      } else {
-        // Text keyword fallback
-        for (const qObj of queryEmbeddings) {
-          if (chunk.text.toLowerCase().includes(qObj.query.toLowerCase())) {
-            bestScore = Math.max(bestScore, 50.0);
+      }
+
+      // 4B. Exact phrase and keyword matching with role/synonym expansion
+      for (const qObj of queryEmbeddings) {
+        const queryClean = (qObj.query || '').toLowerCase().trim();
+        if (!queryClean) continue;
+
+        // Exact phrase match (e.g. "ankit rathore")
+        if (chunkTextLower.includes(queryClean) || chunkTitleLower.includes(queryClean)) {
+          keywordScore = Math.max(keywordScore, 95.0);
+          if (!matchedQuery) matchedQuery = qObj.query;
+        }
+
+        // Tokenized word matching with synonym expansion
+        const tokens = queryClean.match(/[\w]+/g) || [];
+        const stopwords = new Set(['what', 'is', 'the', 'who', 'for', 'are', 'you', 'how', 'why', 'where', 'when', 'a', 'an', 'in', 'on', 'at', 'to', 'of', 'and', 'about']);
+        const meaningfulTokens = tokens.filter(t => !stopwords.has(t) && t.length > 1);
+
+        if (meaningfulTokens.length > 0) {
+          let tokenMatches = 0;
+          for (const token of meaningfulTokens) {
+            const synonyms = [token];
+            if (token === 'founder' || token === 'founders') synonyms.push('co-founder', 'cofounder', 'co-founders', 'cofounders', 'founding', 'founded');
+            if (token === 'cofounder' || token === 'co-founder' || token === 'cofounders' || token === 'co-founders') synonyms.push('founder', 'founders');
+            if (token === 'cost' || token === 'price') synonyms.push('tuition', 'fee', 'fees');
+
+            const matched = synonyms.some(syn => chunkTextLower.includes(syn) || chunkTitleLower.includes(syn));
+            if (matched) tokenMatches++;
+          }
+
+          const ratio = (tokenMatches / meaningfulTokens.length) * 85.0;
+          if (ratio > keywordScore) {
+            keywordScore = ratio;
+            if (!matchedQuery) matchedQuery = qObj.query;
           }
         }
+      }
+
+      // 4C. Combine vector and keyword scores (Hybrid Search)
+      let bestScore = 0;
+      if (vectorScore > 0 && keywordScore > 0) {
+        bestScore = parseFloat((vectorScore * 0.55 + keywordScore * 0.45).toFixed(2));
+        if (keywordScore >= 80) bestScore = Math.min(100, bestScore + 15);
+      } else if (vectorScore > 0) {
+        bestScore = vectorScore;
+      } else {
+        bestScore = keywordScore;
       }
 
       chunkScoreMap.set(chunkId, {
