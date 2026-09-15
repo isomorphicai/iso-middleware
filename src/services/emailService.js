@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const axios = require('axios');
 const logger = require('../helpers/logger');
 const path = require('path');
 const fs = require('fs');
@@ -20,7 +21,8 @@ class EmailService {
     const rawPass = (process.env.SMTP_PASS || '').trim();
     const pass = (host.includes('gmail') || user.endsWith('@gmail.com')) ? rawPass.replace(/\s+/g, '') : rawPass;
     
-    const port = customPort || parseInt(process.env.SMTP_PORT || (host.includes('gmail') ? '465' : '587'), 10);
+    // Default to port 587 (STARTTLS) on cloud environments to avoid port 465 blocking
+    const port = customPort || parseInt(process.env.SMTP_PORT || '587', 10);
     const secure = customSecure !== null ? customSecure : (process.env.SMTP_SECURE === 'true' || port === 465);
 
     if (host && user && pass) {
@@ -31,9 +33,6 @@ class EmailService {
         host: smtpHost,
         port,
         secure,
-        pool: true,
-        maxConnections: 5,
-        maxMessages: 100,
         auth: {
           user,
           pass
@@ -41,9 +40,9 @@ class EmailService {
         tls: {
           rejectUnauthorized: false
         },
-        connectionTimeout: 8000,
-        greetingTimeout: 8000,
-        socketTimeout: 10000
+        connectionTimeout: 6000,
+        greetingTimeout: 6000,
+        socketTimeout: 8000
       });
     }
 
@@ -58,14 +57,14 @@ class EmailService {
 
       if (host && user && rawPass) {
         this.transporter = this.getTransporter();
-        logger.info(`[EmailService] Configured live SMTP transporter for ${host} (${user})`);
+        logger.info(`[EmailService] Configured SMTP transporter for ${host} (${user})`);
       } else {
         this.transporter = nodemailer.createTransport({
           host: 'smtp.ethereal.email',
           port: 587,
           secure: false,
-          connectionTimeout: 8000,
-          socketTimeout: 10000
+          connectionTimeout: 6000,
+          socketTimeout: 8000
         });
       }
     } catch (err) {
@@ -142,26 +141,81 @@ class EmailService {
       </html>
     `;
 
+    const textContent = `Hello ${username},\n\nWe received a request to reset your password for ${orgTitle}.\n\nPlease reset your password using the following link:\n${resetLink}\n\nThis link will expire in 1 hour.\n\nIf you did not request this, please ignore this email.`;
+
     const rawFrom = process.env.SMTP_FROM || (process.env.SMTP_USER ? `"${orgTitle} Security" <${process.env.SMTP_USER}>` : `"${orgTitle} Security" <noreply@isomorphic.ai>`);
     const fromAddress = rawFrom.replace(/^["']|["']$/g, '').trim();
 
     logger.info(`[EmailService] Sending password reset email to "${to}" for user "${username}" from "${fromAddress}"...`);
 
+    // METHOD 1: Resend HTTP API (if RESEND_API_KEY is configured on Render - 100% bypasses SMTP port blocking)
+    if (process.env.RESEND_API_KEY) {
+      try {
+        const fromEmail = fromAddress.includes('<') ? fromAddress : `onboarding@resend.dev`;
+        const res = await axios.post('https://api.resend.com/emails', {
+          from: fromEmail,
+          to: [to],
+          subject,
+          html,
+          text: textContent
+        }, {
+          headers: {
+            'Authorization': `Bearer ${process.env.RESEND_API_KEY.trim()}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 8000
+        });
+
+        logger.info(`[EmailService] Email sent via Resend API! ID: ${res.data?.id}`);
+        return { success: true, messageId: res.data?.id };
+      } catch (resendErr) {
+        logger.warn(`[EmailService] Resend API failed: ${resendErr.response?.data?.message || resendErr.message}. Falling back to SMTP...`);
+      }
+    }
+
+    // METHOD 2: Brevo HTTP API (if BREVO_API_KEY is configured)
+    if (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) {
+      try {
+        const apiKey = (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY).trim();
+        const senderEmail = process.env.SMTP_USER || 'noreply@isomorphic.ai';
+        const res = await axios.post('https://api.brevo.com/v3/smtp/email', {
+          sender: { name: orgTitle, email: senderEmail },
+          to: [{ email: to }],
+          subject,
+          htmlContent: html,
+          textContent
+        }, {
+          headers: {
+            'api-key': apiKey,
+            'Content-Type': 'application/json'
+          },
+          timeout: 8000
+        });
+
+        logger.info(`[EmailService] Email sent via Brevo API! MessageId: ${res.data?.messageId}`);
+        return { success: true, messageId: res.data?.messageId };
+      } catch (brevoErr) {
+        logger.warn(`[EmailService] Brevo API failed: ${brevoErr.response?.data?.message || brevoErr.message}. Falling back to SMTP...`);
+      }
+    }
+
+    // METHOD 3: Multi-Port SMTP Fallback (Prioritizes Port 587 STARTTLS on Cloud)
     const mailPayload = {
       from: fromAddress,
       to,
       subject,
       html,
-      text: `Hello ${username},\n\nWe received a request to reset your password for ${orgTitle}.\n\nPlease reset your password using the following link:\n${resetLink}\n\nThis link will expire in 1 hour.\n\nIf you did not request this, please ignore this email.`
+      text: textContent
     };
 
     const host = (process.env.SMTP_HOST || '').trim();
     const user = (process.env.SMTP_USER || '').trim();
-    const defaultPort = parseInt(process.env.SMTP_PORT || '465', 10);
+    const configuredPort = parseInt(process.env.SMTP_PORT || '587', 10);
 
+    // Try Port 587 STARTTLS first (best cloud compatibility), then configured port, then 465
     const portsToTry = [
-      { port: defaultPort, secure: defaultPort === 465 },
       { port: 587, secure: false },
+      { port: configuredPort, secure: configuredPort === 465 },
       { port: 465, secure: true }
     ];
 
@@ -180,23 +234,23 @@ class EmailService {
 
         const sendPromise = transporter.sendMail(mailPayload);
         const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error(`SMTP connection timed out after 8s on port ${config.port}`)), 8000)
+          setTimeout(() => reject(new Error(`SMTP connection timed out after 6s on port ${config.port}`)), 6000)
         );
 
         const info = await Promise.race([sendPromise, timeoutPromise]);
-        logger.info(`[EmailService] Email sent successfully via port ${config.port}! MessageId: ${info.messageId}`);
+        logger.info(`[EmailService] Email sent successfully via SMTP port ${config.port}! MessageId: ${info.messageId}`);
         return {
           success: true,
           messageId: info.messageId
         };
       } catch (err) {
         lastError = err;
-        logger.warn(`[EmailService] SMTP attempt on port ${config.port} failed: ${err.message}. Trying fallback...`);
+        logger.warn(`[EmailService] SMTP attempt on port ${config.port} failed: ${err.message}`);
       }
     }
 
-    logger.error(`[EmailService] All SMTP dispatch attempts failed: ${lastError?.message}`);
-    throw new Error(`Email dispatch failed: ${lastError?.message || 'SMTP timeout'}`);
+    logger.error(`[EmailService] All email delivery attempts failed: ${lastError?.message}`);
+    throw new Error(`Email dispatch failed: ${lastError?.message || 'SMTP connection timeout. Cloud providers like Render often block port 465/587.'}`);
   }
 }
 
