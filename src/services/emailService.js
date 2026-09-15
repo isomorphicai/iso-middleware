@@ -14,35 +14,36 @@ class EmailService {
     this.initTransporter();
   }
 
-  getTransporter() {
-    // Re-check env vars dynamically in case .env was updated
+  getTransporter(customPort = null, customSecure = null) {
     const host = (process.env.SMTP_HOST || '').trim();
     const user = (process.env.SMTP_USER || '').trim();
     const rawPass = (process.env.SMTP_PASS || '').trim();
-    // For Gmail app passwords, remove any internal spaces if provided like "abcd efgh ijkl mnop"
-    const pass = host.includes('gmail') ? rawPass.replace(/\s+/g, '') : rawPass;
-    const port = parseInt(process.env.SMTP_PORT || '465', 10);
-    const secure = process.env.SMTP_SECURE === 'true' || port === 465;
+    const pass = (host.includes('gmail') || user.endsWith('@gmail.com')) ? rawPass.replace(/\s+/g, '') : rawPass;
+    
+    const port = customPort || parseInt(process.env.SMTP_PORT || (host.includes('gmail') ? '465' : '587'), 10);
+    const secure = customSecure !== null ? customSecure : (process.env.SMTP_SECURE === 'true' || port === 465);
 
     if (host && user && pass) {
-      if (host.includes('gmail')) {
-        return nodemailer.createTransport({
-          service: 'gmail',
-          auth: {
-            user,
-            pass
-          }
-        });
-      }
+      const isGmail = host.includes('gmail') || user.endsWith('@gmail.com');
+      const smtpHost = isGmail ? 'smtp.gmail.com' : host;
 
       return nodemailer.createTransport({
-        host,
+        host: smtpHost,
         port,
         secure,
+        pool: true,
+        maxConnections: 5,
+        maxMessages: 100,
         auth: {
           user,
           pass
-        }
+        },
+        tls: {
+          rejectUnauthorized: false
+        },
+        connectionTimeout: 8000,
+        greetingTimeout: 8000,
+        socketTimeout: 10000
       });
     }
 
@@ -54,28 +55,17 @@ class EmailService {
       const host = (process.env.SMTP_HOST || '').trim();
       const user = (process.env.SMTP_USER || '').trim();
       const rawPass = (process.env.SMTP_PASS || '').trim();
-      const pass = host.includes('gmail') ? rawPass.replace(/\s+/g, '') : rawPass;
 
-      if (host && user && pass) {
+      if (host && user && rawPass) {
         this.transporter = this.getTransporter();
         logger.info(`[EmailService] Configured live SMTP transporter for ${host} (${user})`);
       } else {
-        // Fallback: create free Ethereal test SMTP transporter only if no credentials configured
-        nodemailer.createTestAccount((err, account) => {
-          if (err) {
-            logger.warn(`[EmailService] Could not create test email account: ${err.message}`);
-            return;
-          }
-          this.transporter = nodemailer.createTransport({
-            host: account.smtp.host,
-            port: account.smtp.port,
-            secure: account.smtp.secure,
-            auth: {
-              user: account.user,
-              pass: account.pass
-            }
-          });
-          logger.info(`[EmailService] Initialized test fallback account: ${account.user}`);
+        this.transporter = nodemailer.createTransport({
+          host: 'smtp.ethereal.email',
+          port: 587,
+          secure: false,
+          connectionTimeout: 8000,
+          socketTimeout: 10000
         });
       }
     } catch (err) {
@@ -157,30 +147,56 @@ class EmailService {
 
     logger.info(`[EmailService] Sending password reset email to "${to}" for user "${username}" from "${fromAddress}"...`);
 
-    const transporter = this.getTransporter();
+    const mailPayload = {
+      from: fromAddress,
+      to,
+      subject,
+      html,
+      text: `Hello ${username},\n\nWe received a request to reset your password for ${orgTitle}.\n\nPlease reset your password using the following link:\n${resetLink}\n\nThis link will expire in 1 hour.\n\nIf you did not request this, please ignore this email.`
+    };
 
-    if (transporter) {
+    const host = (process.env.SMTP_HOST || '').trim();
+    const user = (process.env.SMTP_USER || '').trim();
+    const defaultPort = parseInt(process.env.SMTP_PORT || '465', 10);
+
+    const portsToTry = [
+      { port: defaultPort, secure: defaultPort === 465 },
+      { port: 587, secure: false },
+      { port: 465, secure: true }
+    ];
+
+    const uniqueConfigs = [];
+    for (const c of portsToTry) {
+      if (!uniqueConfigs.some(u => u.port === c.port && u.secure === c.secure)) {
+        uniqueConfigs.push(c);
+      }
+    }
+
+    let lastError = null;
+    for (const config of uniqueConfigs) {
       try {
-        const info = await transporter.sendMail({
-          from: fromAddress,
-          to,
-          subject,
-          html,
-          text: `Hello ${username},\n\nWe received a request to reset your password for ${orgTitle}.\n\nPlease reset your password using the following link:\n${resetLink}\n\nThis link will expire in 1 hour.\n\nIf you did not request this, please ignore this email.`
-        });
+        const transporter = this.getTransporter(config.port, config.secure);
+        if (!transporter) continue;
 
-        logger.info(`[EmailService] Email sent successfully! MessageId: ${info.messageId}`);
+        const sendPromise = transporter.sendMail(mailPayload);
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`SMTP connection timed out after 8s on port ${config.port}`)), 8000)
+        );
+
+        const info = await Promise.race([sendPromise, timeoutPromise]);
+        logger.info(`[EmailService] Email sent successfully via port ${config.port}! MessageId: ${info.messageId}`);
         return {
           success: true,
           messageId: info.messageId
         };
-      } catch (sendErr) {
-        logger.error(`[EmailService] Failed to send email via SMTP transporter: ${sendErr.message}`);
-        throw new Error(`Email dispatch failed: ${sendErr.message}`);
+      } catch (err) {
+        lastError = err;
+        logger.warn(`[EmailService] SMTP attempt on port ${config.port} failed: ${err.message}. Trying fallback...`);
       }
     }
 
-    throw new Error('No mail transporter is available to send emails.');
+    logger.error(`[EmailService] All SMTP dispatch attempts failed: ${lastError?.message}`);
+    throw new Error(`Email dispatch failed: ${lastError?.message || 'SMTP timeout'}`);
   }
 }
 

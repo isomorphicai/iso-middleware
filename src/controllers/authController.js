@@ -1176,7 +1176,7 @@ class AuthController {
       });
     } catch (err) {
       logger.error(`Error in forgotPassword: ${err.message}`);
-      next(err);
+      return res.status(500).json({ error: err.message || 'Failed to send password reset email.' });
     }
   }
 
