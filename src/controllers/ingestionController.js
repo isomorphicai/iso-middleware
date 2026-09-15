@@ -2,10 +2,59 @@ const ragService = require('../services/ragService');
 const crawlerService = require('../services/crawlerService');
 const jobManagerService = require('../services/jobManagerService');
 const logger = require('../helpers/logger');
+const mongoose = require('mongoose');
+const { cacheService } = require('../config/redis');
 
 class IngestionController {
   /**
+   * Helper: Resolve user details from session token or request headers
+   */
+  async resolveUser(req) {
+    const sessionId = req.headers['x-session-id'] || 
+      req.headers.authorization?.replace(/^Bearer\s+/i, '') || 
+      req.body?.sessionId || 
+      req.query?.sessionId;
+
+    if (sessionId) {
+      // 1. Try Redis cache
+      try {
+        const cached = await cacheService.get(`session:token:${sessionId}`);
+        if (cached && cached.username) {
+          return cached;
+        }
+      } catch (e) {}
+
+      // 2. Try MongoDB master sessionManagement
+      try {
+        const masterDbName = process.env.MONGO_MASTER_DB || 'master';
+        const db = mongoose.connection.useDb(masterDbName, { useCache: true });
+        const session = await db.collection('sessionManagement').findOne({ sessionId, isActive: true });
+        if (session) {
+          return {
+            username: session.username,
+            role: session.role || 'user',
+            tenantId: session.tenantId,
+            tenantName: session.tenantName
+          };
+        }
+      } catch (e) {}
+    }
+
+    // Fallback from request body / query
+    const rawUsername = req.body?.createdBy || req.body?.username || req.query?.username || '';
+    const rawRole = req.body?.userRole || req.query?.userRole || (rawUsername === 'admin' ? 'global_admin' : 'tenant_admin');
+    const rawTenant = req.body?.tenantId || req.query?.tenantId || '';
+
+    return {
+      username: rawUsername || 'system',
+      role: rawRole,
+      tenantId: rawTenant
+    };
+  }
+
+  /**
    * POST /api/ingestion/scrape
+   * Scrapes a single webpage URL and vectors it
    */
   async scrapeAndIngest(req, res, next) {
     try {
@@ -18,15 +67,31 @@ class IngestionController {
         linkExpiry, 
         expiryNotificationEnabled, 
         notificationEmail,
-        tenantDbName
+        tenantDbName,
+        createdBy
       } = req.body;
 
       if (!url) {
         return res.status(400).json({ error: 'URL is required.' });
       }
       if (!tenantId || !botId) {
-        return res.status(400).json({ error: 'Both tenantId and botId are required to build the partitioned index (${tenantId}_${botId}).' });
+        return res.status(400).json({ error: 'Both tenantId and botId are required.' });
       }
+
+      const requester = await this.resolveUser(req);
+      const user = createdBy || requester.username || 'admin';
+
+      // Create a trackable single ingestion job
+      const job = jobManagerService.createJob({
+        type: 'ingest',
+        tenantId,
+        tenantName,
+        botId,
+        botName,
+        createdBy: user,
+        title: `Ingesting ${url}`,
+        params: { url, tenantName, botName, linkExpiry, notificationEmail }
+      });
 
       const result = await ragService.ingestUrl({
         url,
@@ -40,7 +105,15 @@ class IngestionController {
         tenantDbName
       });
 
-      return res.status(201).json(result);
+      jobManagerService.updateJob(job.jobId, {
+        status: 'completed',
+        progress: { current: 1, total: 1, percentage: 100 },
+        stats: { ingestedCount: 1, discoveredCount: 1 },
+        result
+      });
+      jobManagerService.addLog(job.jobId, `Successfully indexed ${url} into ${result.totalChunks || 0} vector chunks.`, 'success');
+
+      return res.status(201).json({ ...result, jobId: job.jobId });
     } catch (err) {
       logger.error(`[Ingestion Controller] Scrape error: ${err.message}`);
       return res.status(500).json({ error: err.message });
@@ -95,9 +168,7 @@ class IngestionController {
         return res.status(400).json({ error: 'tenantId is required.' });
       }
 
-      // Look up existing source details
       const tenantDb = ragService.getTenantDb(tenantId, tenantDbName);
-      const mongoose = require('mongoose');
       let sId;
       try {
         sId = new mongoose.Types.ObjectId(sourceId);
@@ -168,10 +239,9 @@ class IngestionController {
 
   /**
    * POST /api/ingestion/crawl
-   * Recursively crawls a website up to specified depth, proxy, and include/exclude patterns
+   * Spawns non-blocking asynchronous website crawling job in background
    */
   async crawlWebsite(req, res, next) {
-    let activeJobId = req.body.jobId;
     try {
       const {
         startUrl,
@@ -182,55 +252,84 @@ class IngestionController {
         proxy = '',
         allowSubdomains = false,
         tenantId = 'default',
-        botId = 'default'
+        tenantName = '',
+        botId = 'default',
+        botName = '',
+        createdBy
       } = req.body;
 
       if (!startUrl) {
         return res.status(400).json({ error: 'Starting URL is required for crawling.' });
       }
 
-      if (!activeJobId) {
-        const job = jobManagerService.createJob({
-          type: 'crawl',
-          tenantId,
-          botId,
-          title: `Crawling ${startUrl}`,
-          params: { startUrl, maxDepth, maxPages, proxy: !!proxy, allowSubdomains }
-        });
-        activeJobId = job.jobId;
-      }
+      const requester = await this.resolveUser(req);
+      const user = createdBy || requester.username || 'admin';
 
-      const results = await crawlerService.crawl({
-        startUrl,
-        maxDepth,
-        maxPages,
-        includePatterns,
-        excludePatterns,
-        proxy,
-        allowSubdomains,
-        jobId: activeJobId
+      // Create tracked background job
+      const job = jobManagerService.createJob({
+        type: 'crawl',
+        tenantId,
+        tenantName: tenantName || tenantId,
+        botId,
+        botName: botName || botId,
+        createdBy: user,
+        title: `Crawling ${startUrl}`,
+        params: { startUrl, maxDepth, maxPages, proxy: !!proxy, allowSubdomains }
       });
 
-      return res.json({ jobId: activeJobId, ...results });
+      const activeJobId = job.jobId;
+
+      // Launch crawl in background asynchronously (non-blocking)
+      setImmediate(async () => {
+        try {
+          jobManagerService.addLog(activeJobId, `Starting crawl of ${startUrl} up to depth ${maxDepth}...`, 'info');
+          const results = await crawlerService.crawl({
+            startUrl,
+            maxDepth,
+            maxPages,
+            includePatterns,
+            excludePatterns,
+            proxy,
+            allowSubdomains,
+            jobId: activeJobId
+          });
+
+          jobManagerService.updateJob(activeJobId, {
+            status: 'completed',
+            result: results,
+            progress: { percentage: 100 }
+          });
+          jobManagerService.addLog(activeJobId, `Crawl finished: ${results.totalDiscovered || 0} pages discovered.`, 'success');
+        } catch (err) {
+          const currentJob = jobManagerService.getJob(activeJobId);
+          if (currentJob && currentJob.status !== 'cancelled') {
+            jobManagerService.updateJob(activeJobId, {
+              status: 'failed',
+              error: err.message
+            });
+            jobManagerService.addLog(activeJobId, `Crawl failed: ${err.message}`, 'error');
+          }
+        }
+      });
+
+      // Return immediately with jobId
+      return res.status(202).json({
+        success: true,
+        jobId: activeJobId,
+        message: `Web crawl started in background for ${startUrl}.`,
+        job
+      });
     } catch (err) {
-      if (activeJobId) {
-        jobManagerService.updateJob(activeJobId, {
-          status: 'failed',
-          error: err.message
-        });
-        jobManagerService.addLog(activeJobId, `Crawl failed: ${err.message}`, 'error');
-      }
-      logger.error(`[Ingestion Controller] Crawl error: ${err.message}`);
+      logger.error(`[Ingestion Controller] Crawl launch error: ${err.message}`);
       return res.status(500).json({ error: err.message });
     }
   }
 
   /**
    * POST /api/ingestion/batch-ingest
-   * Ingests an array of discovered URLs into RAG vector index with progress tracking
+   * Spawns non-blocking asynchronous batch ingestion job in background
    */
   async batchIngest(req, res, next) {
-    let activeJobId = req.body.jobId;
     try {
       const {
         urls = [],
@@ -241,7 +340,10 @@ class IngestionController {
         linkExpiry,
         expiryNotificationEnabled,
         notificationEmail,
-        tenantDbName
+        tenantDbName,
+        createdBy,
+        crawledJobId,
+        crawlJobId
       } = req.body;
 
       if (!Array.isArray(urls) || urls.length === 0) {
@@ -251,121 +353,163 @@ class IngestionController {
         return res.status(400).json({ error: 'Both tenantId and botId are required.' });
       }
 
-      if (!activeJobId) {
-        const job = jobManagerService.createJob({
-          type: 'batch_ingest',
-          tenantId,
-          botId,
-          title: `Ingesting ${urls.length} URLs for ${botName || botId}`,
-          params: { totalUrls: urls.length, tenantName, botName }
-        });
-        activeJobId = job.jobId;
-      }
-
-      jobManagerService.updateJob(activeJobId, {
-        status: 'running',
-        progress: { current: 0, total: urls.length },
-        stats: {
-          ingestedCount: 0,
-          failedCount: 0,
-          discoveredCount: urls.length,
-          activeUrl: ''
-        }
-      });
-      jobManagerService.addLog(activeJobId, `Batch ingestion started for ${urls.length} documents.`, 'info');
-
-      const results = [];
-      const errors = [];
-
-      for (let i = 0; i < urls.length; i++) {
-        // Check if job was cancelled
-        const currentJob = jobManagerService.getJob(activeJobId);
-        if (currentJob && currentJob.status === 'cancelled') {
-          logger.info(`[Ingestion Controller] Batch ingestion job "${activeJobId}" aborted due to cancellation.`);
-          break;
-        }
-
-        const item = urls[i];
-        const targetUrl = typeof item === 'string' ? item : item.url;
-        if (!targetUrl) continue;
-
-        jobManagerService.updateJob(activeJobId, {
-          progress: { current: i + 1, total: urls.length },
-          stats: { activeUrl: targetUrl }
-        });
-
+      // If this batch ingestion came from a completed crawl job, delete that crawled job
+      const parentCrawlId = crawledJobId || crawlJobId;
+      if (parentCrawlId) {
         try {
-          const result = await ragService.ingestUrl({
-            url: targetUrl,
-            tenantId,
-            tenantName,
-            botId,
-            botName,
-            linkExpiry,
-            expiryNotificationEnabled,
-            notificationEmail,
-            tenantDbName
-          });
-          results.push(result);
-
-          jobManagerService.updateJob(activeJobId, {
-            stats: { ingestedCount: results.length }
-          });
-          jobManagerService.addLog(activeJobId, `Ingested: ${targetUrl} (${result.totalChunks || 0} chunks)`, 'success');
-        } catch (err) {
-          logger.warn(`[Ingestion Controller] Batch item failed for "${targetUrl}": ${err.message}`);
-          errors.push({ url: targetUrl, error: err.message });
-
-          jobManagerService.updateJob(activeJobId, {
-            stats: { failedCount: errors.length }
-          });
-          jobManagerService.addLog(activeJobId, `Failed to ingest: ${targetUrl} (${err.message})`, 'warn');
+          await jobManagerService.deleteJob(parentCrawlId);
+          logger.info(`[Ingestion Controller] Deleted completed crawl job "${parentCrawlId}" as its URLs are now being ingested.`);
+        } catch (delErr) {
+          logger.warn(`[Ingestion Controller] Could not delete crawl job "${parentCrawlId}": ${delErr.message}`);
         }
+      } else {
+        // Also check if any completed crawl job for this tenant matches these URLs and delete it
+        try {
+          for (const [id, j] of jobManagerService.jobs.entries()) {
+            if ((j.type === 'crawl' || j.type === 'website_crawl') && j.status === 'completed' && j.tenantId === tenantId) {
+              const jUrls = (j.result?.discoveredUrls || []).map(u => typeof u === 'string' ? u : u.url);
+              if (jUrls.length > 0 && urls.some(u => jUrls.includes(u))) {
+                await jobManagerService.deleteJob(id);
+                logger.info(`[Ingestion Controller] Cleaned up completed crawl job "${id}" matching batch ingested URLs.`);
+              }
+            }
+          }
+        } catch (e) {}
       }
 
-      const finalStatus = errors.length === urls.length ? 'failed' : 'completed';
-      const batchResult = {
-        jobId: activeJobId,
-        total: urls.length,
-        successful: results.length,
-        failed: errors.length,
-        results,
-        errors
-      };
+      const requester = await this.resolveUser(req);
+      const user = createdBy || requester.username || 'admin';
 
-      jobManagerService.updateJob(activeJobId, {
-        status: finalStatus,
-        progress: { current: urls.length, total: urls.length, percentage: 100 },
-        stats: { activeUrl: '' },
-        result: batchResult
+      // 1. Create tracked background job
+      const job = jobManagerService.createJob({
+        type: 'batch_ingest',
+        tenantId,
+        tenantName: tenantName || tenantId,
+        botId,
+        botName: botName || botId,
+        createdBy: user,
+        title: `Batch Ingestion (${urls.length} URLs)`,
+        params: { totalUrls: urls.length, tenantName, botName, linkExpiry, notificationEmail }
       });
-      jobManagerService.addLog(activeJobId, `Batch ingestion finished: ${results.length} succeeded, ${errors.length} failed.`, 'info');
 
-      return res.status(200).json(batchResult);
-    } catch (err) {
-      if (activeJobId) {
+      const activeJobId = job.jobId;
+
+      // 2. Launch batch ingestion worker in background asynchronously (non-blocking)
+      setImmediate(async () => {
         jobManagerService.updateJob(activeJobId, {
-          status: 'failed',
-          error: err.message
+          status: 'running',
+          progress: { current: 0, total: urls.length, percentage: 0 },
+          stats: {
+            ingestedCount: 0,
+            failedCount: 0,
+            discoveredCount: urls.length,
+            activeUrl: ''
+          }
         });
-        jobManagerService.addLog(activeJobId, `Batch ingestion failed: ${err.message}`, 'error');
-      }
-      logger.error(`[Ingestion Controller] Batch ingest error: ${err.message}`);
+        jobManagerService.addLog(activeJobId, `Batch ingestion started for ${urls.length} documents by ${user}.`, 'info');
+
+        const results = [];
+        const errors = [];
+
+        for (let i = 0; i < urls.length; i++) {
+          // Check if user requested cancellation
+          const currentJob = jobManagerService.getJob(activeJobId);
+          if (currentJob && currentJob.status === 'cancelled') {
+            logger.info(`[Ingestion Controller] Batch ingestion "${activeJobId}" stopped due to cancellation.`);
+            break;
+          }
+
+          const item = urls[i];
+          const targetUrl = typeof item === 'string' ? item.trim() : item?.url?.trim();
+          if (!targetUrl) continue;
+
+          const pct = Math.round(((i) / urls.length) * 100);
+          jobManagerService.updateJob(activeJobId, {
+            progress: { current: i, total: urls.length, percentage: pct, currentUrl: targetUrl },
+            stats: { activeUrl: targetUrl }
+          });
+
+          try {
+            const result = await ragService.ingestUrl({
+              url: targetUrl,
+              tenantId,
+              tenantName,
+              botId,
+              botName,
+              linkExpiry,
+              expiryNotificationEnabled,
+              notificationEmail,
+              tenantDbName
+            });
+            results.push(result);
+
+            jobManagerService.updateJob(activeJobId, {
+              stats: { ingestedCount: results.length }
+            });
+            jobManagerService.addLog(activeJobId, `[${i + 1}/${urls.length}] Ingested: ${targetUrl} (${result.totalChunks || 0} chunks)`, 'success');
+          } catch (itemErr) {
+            logger.warn(`[Ingestion Controller] Batch item failed for "${targetUrl}": ${itemErr.message}`);
+            errors.push({ url: targetUrl, error: itemErr.message });
+
+            jobManagerService.updateJob(activeJobId, {
+              stats: { failedCount: errors.length }
+            });
+            jobManagerService.addLog(activeJobId, `[${i + 1}/${urls.length}] Ingest failed: ${targetUrl} (${itemErr.message})`, 'warn');
+          }
+        }
+
+        // Final check if cancelled
+        const finalJob = jobManagerService.getJob(activeJobId);
+        if (finalJob && finalJob.status === 'cancelled') {
+          return;
+        }
+
+        const finalStatus = errors.length === urls.length ? 'failed' : 'completed';
+        const batchResult = {
+          jobId: activeJobId,
+          total: urls.length,
+          successful: results.length,
+          failed: errors.length,
+          results,
+          errors
+        };
+
+        jobManagerService.updateJob(activeJobId, {
+          status: finalStatus,
+          progress: { current: urls.length, total: urls.length, percentage: 100, currentUrl: '' },
+          stats: { activeUrl: '' },
+          result: batchResult
+        });
+        jobManagerService.addLog(activeJobId, `Batch ingestion finished: ${results.length} succeeded, ${errors.length} failed.`, 'info');
+      });
+
+      // Return immediately with HTTP 202 Accepted
+      return res.status(202).json({
+        success: true,
+        jobId: activeJobId,
+        message: `Batch ingestion started for ${urls.length} documents.`,
+        job
+      });
+    } catch (err) {
+      logger.error(`[Ingestion Controller] Batch ingest launch error: ${err.message}`);
       return res.status(500).json({ error: err.message });
     }
   }
 
   /**
    * GET /api/ingestion/jobs/active
-   * Returns active and recent ingestion/crawler operations for real-time polling
+   * Returns active and historical crawler/ingestion jobs for tenant / global admin
    */
   async getActiveJobs(req, res, next) {
     try {
       const { tenantId, botId, limit } = req.query;
+      const requesterUser = await this.resolveUser(req);
+
       const jobs = jobManagerService.getJobs({
         tenantId,
         botId,
-        limit: limit ? parseInt(limit) : 20
+        requesterUser,
+        limit: limit ? parseInt(limit, 10) : 50
       });
 
       const activeCount = jobs.filter(j => j.status === 'running' || j.status === 'pending').length;
@@ -383,7 +527,6 @@ class IngestionController {
 
   /**
    * GET /api/ingestion/jobs/:jobId
-   * Returns status and full log stream of a specific job
    */
   async getJobById(req, res, next) {
     try {
@@ -401,16 +544,23 @@ class IngestionController {
 
   /**
    * POST /api/ingestion/jobs/:jobId/cancel
-   * Cancels / aborts an active running job
+   * Cancels / aborts an active running job (only creator or global admin allowed)
    */
   async cancelJob(req, res, next) {
     try {
       const { jobId } = req.params;
-      const cancelled = jobManagerService.cancelJob(jobId);
+      const requesterUser = await this.resolveUser(req);
+
+      const result = jobManagerService.cancelJob(jobId, requesterUser);
+      if (!result.success) {
+        const statusCode = result.error?.includes('Permission denied') ? 403 : 400;
+        return res.status(statusCode).json({ success: false, error: result.error });
+      }
+
       return res.json({
-        success: cancelled,
+        success: true,
         jobId,
-        message: cancelled ? 'Job cancelled successfully.' : 'Job could not be cancelled or is not running.'
+        message: result.message
       });
     } catch (err) {
       logger.error(`[Ingestion Controller] Cancel job error: ${err.message}`);
@@ -420,13 +570,16 @@ class IngestionController {
 
   /**
    * DELETE /api/ingestion/jobs/:jobId
-   * Deletes a single job from history
    */
   async deleteJob(req, res, next) {
     try {
       const { jobId } = req.params;
-      const deleted = jobManagerService.deleteJob(jobId);
-      return res.json({ success: deleted, jobId });
+      const requesterUser = await this.resolveUser(req);
+      const deleted = await jobManagerService.deleteJob(jobId, requesterUser);
+      if (!deleted) {
+        return res.status(403).json({ success: false, error: 'Could not delete task or permission denied.' });
+      }
+      return res.json({ success: true, jobId });
     } catch (err) {
       logger.error(`[Ingestion Controller] Delete job error: ${err.message}`);
       return res.status(500).json({ error: err.message });
@@ -435,12 +588,12 @@ class IngestionController {
 
   /**
    * POST /api/ingestion/jobs/clear-completed
-   * Clears all completed, failed, or cancelled jobs
    */
   async clearCompletedJobs(req, res, next) {
     try {
       const { tenantId, botId } = req.body;
-      const count = jobManagerService.clearCompletedJobs({ tenantId, botId });
+      const requesterUser = await this.resolveUser(req);
+      const count = await jobManagerService.clearCompletedJobs({ tenantId, botId, requesterUser });
       return res.json({ success: true, clearedCount: count });
     } catch (err) {
       logger.error(`[Ingestion Controller] Clear completed jobs error: ${err.message}`);

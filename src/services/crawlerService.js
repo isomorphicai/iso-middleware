@@ -201,8 +201,9 @@ class CrawlerService {
       visited.add(currentUrl);
 
       if (jobId) {
+        const pct = Math.min(99, Math.round((discoveredUrls.length / pageLimit) * 100));
         jobManagerService.updateJob(jobId, {
-          progress: { current: discoveredUrls.length, total: pageLimit },
+          progress: { current: discoveredUrls.length, total: pageLimit, currentUrl, percentage: pct, percent: pct },
           stats: {
             activeUrl: currentUrl,
             currentDepth: current.depth,
@@ -241,8 +242,10 @@ class CrawlerService {
         });
 
         if (jobId) {
+          const pct = Math.min(99, Math.round((discoveredUrls.length / pageLimit) * 100));
           jobManagerService.addLog(jobId, `Discovered: "${pageTitle.slice(0, 45)}" (Depth ${current.depth})`, 'success');
           jobManagerService.updateJob(jobId, {
+            progress: { current: discoveredUrls.length, total: pageLimit, currentUrl, percentage: pct, percent: pct },
             stats: { discoveredCount: discoveredUrls.length }
           });
         }
