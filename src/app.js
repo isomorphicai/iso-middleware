@@ -18,11 +18,23 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false
 }));
 
-// CORS configuration: enables cross-origin requests for chatbot embedding
+// CORS configuration: enables cross-origin requests for chatbot embedding & multi-tenant portals
 const corsOptions = {
   origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN.split(','),
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'Accept',
+    'X-Requested-With',
+    'Cache-Control',
+    'Pragma',
+    'Expires',
+    'x-session-id',
+    'X-Session-Id',
+    'x-api-key',
+    'X-Api-Key'
+  ],
   credentials: true
 };
 app.use(cors(corsOptions));
