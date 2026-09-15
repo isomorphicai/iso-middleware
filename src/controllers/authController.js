@@ -1152,13 +1152,19 @@ class AuthController {
       const resetLink = `${hostUrl}${resetPath}?resetToken=${resetToken}&username=${encodeURIComponent(targetUser.username)}`;
 
       // Send Email
-      const emailResult = await emailService.sendPasswordResetEmail({
-        to: userEmail,
-        username: targetUser.fullName || targetUser.username,
-        resetLink,
-        tenantName: resolvedTenantDoc?.tenantName || resolvedTenantDoc?.name || 'isomorphic',
-        tenantConfig: resolvedTenantDoc?.tenantConfig || {}
-      });
+      let emailResult = null;
+      try {
+        emailResult = await emailService.sendPasswordResetEmail({
+          to: userEmail,
+          username: targetUser.fullName || targetUser.username,
+          resetLink,
+          tenantName: resolvedTenantDoc?.tenantName || resolvedTenantDoc?.name || 'isomorphic',
+          tenantConfig: resolvedTenantDoc?.tenantConfig || {}
+        });
+      } catch (eErr) {
+        logger.warn(`[Auth] Email sending failed: ${eErr.message}`);
+        emailResult = { success: false, error: eErr.message };
+      }
 
       // Mask email for privacy (e.g. j***@example.com)
       const parts = userEmail.split('@');
@@ -1166,17 +1172,27 @@ class AuthController {
         ? `${parts[0][0]}***${parts[0][parts[0].length - 1]}@${parts[1]}`
         : `${parts[0][0]}***@${parts[1]}`;
 
+      const emailSent = emailResult && emailResult.success !== false;
+
+      logger.info(`======================================================================`);
+      logger.info(`🔑 PASSWORD RESET LINK FOR ${targetUser.username} (${userEmail}):`);
+      logger.info(`${resetLink}`);
+      logger.info(`Email Delivered: ${emailSent ? 'YES' : 'NO (Blocked by cloud host)'}`);
+      logger.info(`======================================================================`);
+
       return res.json({
         success: true,
-        message: `A password reset link has been sent to ${maskedEmail}.`,
+        emailSent,
+        message: emailSent
+          ? `A password reset link has been sent to ${maskedEmail}.`
+          : `Password reset link generated for ${maskedEmail}.`,
         email: maskedEmail,
         tenant: tenantSlug,
-        previewUrl: emailResult?.previewUrl || null,
-        resetLink
+        resetLink: emailSent ? undefined : resetLink
       });
     } catch (err) {
       logger.error(`Error in forgotPassword: ${err.message}`);
-      return res.status(500).json({ error: err.message || 'Failed to send password reset email.' });
+      return res.status(500).json({ error: err.message || 'Failed to process password reset request.' });
     }
   }
 

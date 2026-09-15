@@ -148,12 +148,12 @@ class EmailService {
 
     logger.info(`[EmailService] Sending password reset email to "${to}" for user "${username}" from "${fromAddress}"...`);
 
-    // METHOD 1: Resend HTTP API (if RESEND_API_KEY is configured on Render - 100% bypasses SMTP port blocking)
+    // METHOD 1: Resend HTTP API (RESEND_API_KEY)
     if (process.env.RESEND_API_KEY) {
       try {
-        const fromEmail = fromAddress.includes('<') ? fromAddress : `onboarding@resend.dev`;
+        const fromEmail = fromAddress.includes('<') ? fromAddress : (process.env.SMTP_USER || 'onboarding@resend.dev');
         const res = await axios.post('https://api.resend.com/emails', {
-          from: fromEmail,
+          from: fromEmail.includes('@resend.dev') || fromEmail.includes('@') ? fromEmail : 'onboarding@resend.dev',
           to: [to],
           subject,
           html,
@@ -163,17 +163,17 @@ class EmailService {
             'Authorization': `Bearer ${process.env.RESEND_API_KEY.trim()}`,
             'Content-Type': 'application/json'
           },
-          timeout: 8000
+          timeout: 6000
         });
 
         logger.info(`[EmailService] Email sent via Resend API! ID: ${res.data?.id}`);
         return { success: true, messageId: res.data?.id };
       } catch (resendErr) {
-        logger.warn(`[EmailService] Resend API failed: ${resendErr.response?.data?.message || resendErr.message}. Falling back to SMTP...`);
+        logger.warn(`[EmailService] Resend API failed: ${resendErr.response?.data?.message || resendErr.message}. Trying other methods...`);
       }
     }
 
-    // METHOD 2: Brevo HTTP API (if BREVO_API_KEY is configured)
+    // METHOD 2: Brevo / Sendinblue HTTP API (BREVO_API_KEY)
     if (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) {
       try {
         const apiKey = (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY).trim();
@@ -189,17 +189,70 @@ class EmailService {
             'api-key': apiKey,
             'Content-Type': 'application/json'
           },
-          timeout: 8000
+          timeout: 6000
         });
 
         logger.info(`[EmailService] Email sent via Brevo API! MessageId: ${res.data?.messageId}`);
         return { success: true, messageId: res.data?.messageId };
       } catch (brevoErr) {
-        logger.warn(`[EmailService] Brevo API failed: ${brevoErr.response?.data?.message || brevoErr.message}. Falling back to SMTP...`);
+        logger.warn(`[EmailService] Brevo API failed: ${brevoErr.response?.data?.message || brevoErr.message}. Trying other methods...`);
       }
     }
 
-    // METHOD 3: Multi-Port SMTP Fallback (Prioritizes Port 587 STARTTLS on Cloud)
+    // METHOD 3: SendGrid HTTP API (SENDGRID_API_KEY)
+    if (process.env.SENDGRID_API_KEY) {
+      try {
+        const senderEmail = process.env.SMTP_USER || 'noreply@isomorphic.ai';
+        const res = await axios.post('https://api.sendgrid.com/v3/mail/send', {
+          personalizations: [{ to: [{ email: to }] }],
+          from: { email: senderEmail, name: orgTitle },
+          subject,
+          content: [
+            { type: 'text/plain', value: textContent },
+            { type: 'text/html', value: html }
+          ]
+        }, {
+          headers: {
+            'Authorization': `Bearer ${process.env.SENDGRID_API_KEY.trim()}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 6000
+        });
+
+        logger.info(`[EmailService] Email sent via SendGrid API! Status: ${res.status}`);
+        return { success: true, messageId: 'sendgrid-' + Date.now() };
+      } catch (sgErr) {
+        logger.warn(`[EmailService] SendGrid API failed: ${sgErr.response?.data?.errors?.[0]?.message || sgErr.message}. Trying other methods...`);
+      }
+    }
+
+    // METHOD 4: Postmark HTTP API (POSTMARK_SERVER_TOKEN or POSTMARK_API_KEY)
+    if (process.env.POSTMARK_SERVER_TOKEN || process.env.POSTMARK_API_KEY) {
+      try {
+        const token = (process.env.POSTMARK_SERVER_TOKEN || process.env.POSTMARK_API_KEY).trim();
+        const senderEmail = process.env.SMTP_USER || 'noreply@isomorphic.ai';
+        const res = await axios.post('https://api.postmarkapp.com/email', {
+          From: senderEmail,
+          To: to,
+          Subject: subject,
+          HtmlBody: html,
+          TextBody: textContent
+        }, {
+          headers: {
+            'X-Postmark-Server-Token': token,
+            'Content-Type': 'application/json'
+          },
+          timeout: 6000
+        });
+
+        logger.info(`[EmailService] Email sent via Postmark API! MessageID: ${res.data?.MessageID}`);
+        return { success: true, messageId: res.data?.MessageID };
+      } catch (pmErr) {
+        logger.warn(`[EmailService] Postmark API failed: ${pmErr.response?.data?.Message || pmErr.message}`);
+      }
+    }
+
+    // METHOD 5: Multi-Port SMTP Fallback (Fast 3s timeout for cloud environments)
     const mailPayload = {
       from: fromAddress,
       to,
@@ -212,7 +265,6 @@ class EmailService {
     const user = (process.env.SMTP_USER || '').trim();
     const configuredPort = parseInt(process.env.SMTP_PORT || '587', 10);
 
-    // Try Port 587 STARTTLS first (best cloud compatibility), then configured port, then 465
     const portsToTry = [
       { port: 587, secure: false },
       { port: configuredPort, secure: configuredPort === 465 },
@@ -234,7 +286,7 @@ class EmailService {
 
         const sendPromise = transporter.sendMail(mailPayload);
         const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error(`SMTP connection timed out after 6s on port ${config.port}`)), 6000)
+          setTimeout(() => reject(new Error(`SMTP connection timed out after 3s on port ${config.port}`)), 3000)
         );
 
         const info = await Promise.race([sendPromise, timeoutPromise]);
@@ -250,7 +302,13 @@ class EmailService {
     }
 
     logger.error(`[EmailService] All email delivery attempts failed: ${lastError?.message}`);
-    throw new Error(`Email dispatch failed: ${lastError?.message || 'SMTP connection timeout. Cloud providers like Render often block port 465/587.'}`);
+    
+    // Return structured failure instead of crashing the flow
+    return {
+      success: false,
+      error: `Email delivery failed (${lastError?.message || 'Host blocked SMTP ports'}). Set RESEND_API_KEY or BREVO_API_KEY in Render dashboard for instant HTTPS email delivery.`,
+      resetLink
+    };
   }
 }
 
