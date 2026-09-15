@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { User, RolePermission, Tenant } = require('../models');
 const cacheService = require('../services/cacheService');
+const emailService = require('../services/emailService');
 const logger = require('../helpers/logger');
 
 // Inactivity timeout: 2 Hours (7200000 milliseconds)
@@ -126,7 +127,7 @@ class AuthController {
   // ==========================================
   async login(req, res, next) {
     try {
-      const { username, password } = req.body;
+      const { username, password, tenant, tenantId } = req.body;
       if (!username || !password) {
         return res.status(400).json({ error: 'Username and password are required.' });
       }
@@ -134,6 +135,7 @@ class AuthController {
       const cleanUsername = username.trim();
       const cleanPassword = password.trim();
       const userRegex = new RegExp(`^${cleanUsername}$`, 'i');
+      const requestedTenant = (tenantId || tenant || '').trim().toLowerCase();
 
       const masterDb = this.getMasterDb();
       let authenticatedUser = null;
@@ -149,57 +151,154 @@ class AuthController {
         return cleanPassword === stored;
       };
 
-      // 1. Search dynamic tenant databases (iso_<tenantId> > users)
+      // 1. Search dynamic tenant database(s)
       const allTenants = await masterDb.collection('tenantInfo').find({}).toArray();
-      for (const t of allTenants) {
-        try {
-          const tDbName = t.tenantDbName || (t.tenantId ? `iso_${t.tenantId}` : null);
-          if (!tDbName) continue;
-          const tDb = mongoose.connection.useDb(tDbName, { useCache: true });
-          const tUser = await tDb.collection('users').findOne({ 
-            $or: [{ username: cleanUsername }, { username: userRegex }] 
-          });
-          if (tUser && checkPass(tUser.password)) {
-            authenticatedUser = {
-              username: tUser.username,
-              role: tUser.role || (t.tenantId === 'admin' ? 'global_admin' : 'tenant_admin'),
-              tenantId: t.tenantId || t._id?.toString(),
-              tenantName: t.tenantName || t.name || t.tenantId,
-              fullName: tUser.fullName || tUser.username,
-              email: tUser.email || `${tUser.username}@${t.tenantId}.com`,
-              phone: tUser.phone || '',
-              photo: tUser.photo || '',
-              tenantConfig: t.tenantConfig || {}
-            };
-            targetTenantName = t.tenantName || t.name || t.tenantId;
-            targetTenantConfig = t.tenantConfig || {};
-            break;
+
+      if (requestedTenant) {
+        // STRICT TENANT ISOLATION: Only search the specific requested tenant
+        const targetTenantDoc = allTenants.find(t => 
+          (t.tenantId && t.tenantId.toLowerCase() === requestedTenant) ||
+          (t.code && t.code.toLowerCase() === requestedTenant) ||
+          (t.tenantName && t.tenantName.toLowerCase() === requestedTenant) ||
+          (t.name && t.name.toLowerCase() === requestedTenant) ||
+          (t._id && t._id.toString().toLowerCase() === requestedTenant)
+        );
+
+        if (!targetTenantDoc) {
+          return res.status(404).json({ error: `Organization "${requestedTenant}" not found.` });
+        }
+
+        if (targetTenantDoc.tenantActive === false) {
+          return res.status(403).json({ error: `Organization "${targetTenantDoc.tenantName || requestedTenant}" is inactive.` });
+        }
+
+        const tDbName = targetTenantDoc.tenantDbName || (targetTenantDoc.tenantId ? `iso_${targetTenantDoc.tenantId}` : null);
+        if (tDbName) {
+          try {
+            const tDb = mongoose.connection.useDb(tDbName, { useCache: true });
+            const tUser = await tDb.collection('users').findOne({ 
+              $or: [{ username: cleanUsername }, { username: userRegex }] 
+            });
+            if (tUser && checkPass(tUser.password)) {
+              authenticatedUser = {
+                username: tUser.username,
+                role: tUser.role || (targetTenantDoc.tenantId === 'admin' ? 'global_admin' : 'tenant_admin'),
+                tenantId: targetTenantDoc.tenantId || targetTenantDoc._id?.toString(),
+                tenantName: targetTenantDoc.tenantName || targetTenantDoc.name || targetTenantDoc.tenantId,
+                fullName: tUser.fullName || tUser.username,
+                email: tUser.email || `${tUser.username}@${targetTenantDoc.tenantId}.com`,
+                phone: tUser.phone || '',
+                photo: tUser.photo || '',
+                tenantConfig: targetTenantDoc.tenantConfig || {}
+              };
+              targetTenantName = targetTenantDoc.tenantName || targetTenantDoc.name || targetTenantDoc.tenantId;
+              targetTenantConfig = targetTenantDoc.tenantConfig || {};
+            }
+          } catch (e) {
+            logger.error(`Error searching tenant db "${tDbName}": ${e.message}`);
           }
-        } catch (e) {
-          // continue checking
         }
-      }
 
-      // 2. Default fallback for standard demo admin if db not populated
-      if (!authenticatedUser) {
-        if (cleanUsername.toLowerCase() === 'admin' && (cleanPassword === 'admin123' || cleanPassword === 'password' || cleanPassword === 'password123' || cleanPassword === 'admin')) {
-          authenticatedUser = {
-            username: 'admin',
-            role: 'global_admin',
-            tenantId: 'admin',
-            tenantName: 'admin',
-            fullName: 'Super Administrator',
-            email: 'admin@isomorphic.com',
-            phone: '',
-            photo: '',
-            tenantConfig: {}
-          };
-          targetTenantName = 'admin';
+        // If not found in tenant DB, check if user is a global administrator in master.users
+        if (!authenticatedUser) {
+          try {
+            const masterUser = await masterDb.collection('users').findOne({ 
+              $or: [{ username: cleanUsername }, { username: userRegex }] 
+            });
+            if (masterUser && checkPass(masterUser.password)) {
+              const isGlobal = masterUser.role === 'global_admin' || masterUser.role === 'super_admin' || masterUser.isGlobalAdmin || targetTenantDoc.tenantId === 'admin';
+              if (isGlobal) {
+                authenticatedUser = {
+                  username: masterUser.username,
+                  role: masterUser.role || 'global_admin',
+                  tenantId: targetTenantDoc.tenantId || targetTenantDoc._id?.toString(),
+                  tenantName: targetTenantDoc.tenantName || targetTenantDoc.name || targetTenantDoc.tenantId,
+                  fullName: masterUser.fullName || masterUser.username,
+                  email: masterUser.email || `${masterUser.username}@isomorphic.com`,
+                  phone: masterUser.phone || '',
+                  photo: masterUser.photo || '',
+                  tenantConfig: targetTenantDoc.tenantConfig || {}
+                };
+                targetTenantName = targetTenantDoc.tenantName || targetTenantDoc.name || targetTenantDoc.tenantId;
+                targetTenantConfig = targetTenantDoc.tenantConfig || {};
+              }
+            }
+          } catch (e) {}
         }
-      }
 
-      if (!authenticatedUser) {
-        return res.status(401).json({ error: 'Invalid username or password.' });
+        // Demo fallback ONLY for the 'admin' tenant
+        if (!authenticatedUser && (targetTenantDoc.tenantId === 'admin' || targetTenantDoc.code === 'admin')) {
+          if (cleanUsername.toLowerCase() === 'admin' && (cleanPassword === 'admin123' || cleanPassword === 'password' || cleanPassword === 'password123' || cleanPassword === 'admin')) {
+            authenticatedUser = {
+              username: 'admin',
+              role: 'global_admin',
+              tenantId: 'admin',
+              tenantName: 'admin',
+              fullName: 'Super Administrator',
+              email: 'admin@isomorphic.com',
+              phone: '',
+              photo: '',
+              tenantConfig: {}
+            };
+            targetTenantName = 'admin';
+          }
+        }
+
+        if (!authenticatedUser) {
+          return res.status(401).json({ error: `Invalid username or password for ${targetTenantDoc.tenantName || requestedTenant}.` });
+        }
+      } else {
+        // No specific tenant specified (standard login): search across tenants
+        for (const t of allTenants) {
+          try {
+            const tDbName = t.tenantDbName || (t.tenantId ? `iso_${t.tenantId}` : null);
+            if (!tDbName) continue;
+            const tDb = mongoose.connection.useDb(tDbName, { useCache: true });
+            const tUser = await tDb.collection('users').findOne({ 
+              $or: [{ username: cleanUsername }, { username: userRegex }] 
+            });
+            if (tUser && checkPass(tUser.password)) {
+              authenticatedUser = {
+                username: tUser.username,
+                role: tUser.role || (t.tenantId === 'admin' ? 'global_admin' : 'tenant_admin'),
+                tenantId: t.tenantId || t._id?.toString(),
+                tenantName: t.tenantName || t.name || t.tenantId,
+                fullName: tUser.fullName || tUser.username,
+                email: tUser.email || `${tUser.username}@${t.tenantId}.com`,
+                phone: tUser.phone || '',
+                photo: tUser.photo || '',
+                tenantConfig: t.tenantConfig || {}
+              };
+              targetTenantName = t.tenantName || t.name || t.tenantId;
+              targetTenantConfig = t.tenantConfig || {};
+              break;
+            }
+          } catch (e) {
+            // continue checking
+          }
+        }
+
+        // Default fallback for standard demo admin
+        if (!authenticatedUser) {
+          if (cleanUsername.toLowerCase() === 'admin' && (cleanPassword === 'admin123' || cleanPassword === 'password' || cleanPassword === 'password123' || cleanPassword === 'admin')) {
+            authenticatedUser = {
+              username: 'admin',
+              role: 'global_admin',
+              tenantId: 'admin',
+              tenantName: 'admin',
+              fullName: 'Super Administrator',
+              email: 'admin@isomorphic.com',
+              phone: '',
+              photo: '',
+              tenantConfig: {}
+            };
+            targetTenantName = 'admin';
+          }
+        }
+
+        if (!authenticatedUser) {
+          return res.status(401).json({ error: 'Invalid username or password.' });
+        }
       }
 
       // Resolve allowed menus & analytics widgets dynamically
@@ -234,8 +333,8 @@ class AuthController {
         loginTime: now,
         lastActivityTime: now,
         isActive: true,
-        ipAddress: req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '',
-        userAgent: req.headers['user-agent'] || '',
+        ipAddress: req.ip || req.headers?.['x-forwarded-for'] || req.socket?.remoteAddress || '',
+        userAgent: req.headers?.['user-agent'] || '',
         createdAt: now,
         updatedAt: now
       };
@@ -842,6 +941,410 @@ class AuthController {
       });
     } catch (err) {
       logger.error(`Error updating user profile: ${err.message}`);
+      next(err);
+    }
+  }
+
+  // ==========================================
+  // PUBLIC TENANT BRANDING (For /login/:tenant)
+  // ==========================================
+  async getTenantPublicBranding(req, res, next) {
+    try {
+      const identifier = (req.params.identifier || req.query.tenant || req.query.tenantId || req.query.code || '').trim();
+      if (!identifier) {
+        return res.status(400).json({ error: 'Tenant identifier is required.' });
+      }
+
+      const cacheKey = `tenant:branding:${identifier.toLowerCase()}`;
+      const branding = await cacheService.wrap(cacheKey, async () => {
+        const masterDb = this.getMasterDb();
+        const escapedId = identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const identRegex = new RegExp(`^${escapedId}$`, 'i');
+
+        let query = {
+          $or: [
+            { tenantId: identRegex },
+            { code: identRegex },
+            { tenantName: identRegex },
+            { name: identRegex }
+          ]
+        };
+
+        if (mongoose.Types.ObjectId.isValid(identifier) && identifier.length === 24) {
+          query.$or.push({ _id: new mongoose.Types.ObjectId(identifier) });
+        }
+
+        const tenantDoc = await masterDb.collection('tenantInfo').findOne(query);
+        if (!tenantDoc) {
+          return null;
+        }
+
+        return {
+          _id: tenantDoc._id.toString(),
+          tenantId: tenantDoc.tenantId || tenantDoc.code || tenantDoc._id.toString(),
+          tenantName: tenantDoc.tenantName || tenantDoc.name || tenantDoc.tenantId,
+          name: tenantDoc.name || tenantDoc.tenantName,
+          code: tenantDoc.code || tenantDoc.tenantId,
+          tenantActive: tenantDoc.tenantActive !== false,
+          tenantConfig: tenantDoc.tenantConfig || {}
+        };
+      }, 300);
+
+      if (!branding) {
+        return res.status(404).json({ error: `Tenant "${identifier}" not found.` });
+      }
+
+      if (branding.tenantActive === false) {
+        return res.status(403).json({ error: `Tenant "${identifier}" is currently inactive.` });
+      }
+
+      return res.json(branding);
+    } catch (err) {
+      logger.error(`Error fetching tenant public branding: ${err.message}`);
+      next(err);
+    }
+  }
+
+  /**
+   * POST /api/auth/forgot-password
+   * Verify user exists in tenant database and has emailId, generate reset token, and send email
+   */
+  async forgotPassword(req, res, next) {
+    try {
+      const { identifier, username, email, tenant, tenantId, baseUrl } = req.body;
+      const cleanIdent = (identifier || username || email || '').trim();
+      const requestedTenant = (tenant || tenantId || '').trim().toLowerCase();
+
+      if (!cleanIdent) {
+        return res.status(400).json({ error: 'Please provide your registered username or email address.' });
+      }
+
+      const masterDb = this.getMasterDb();
+      const allTenants = await masterDb.collection('tenantInfo').find({}).toArray();
+
+      let targetTenantDoc = null;
+      if (requestedTenant) {
+        targetTenantDoc = allTenants.find(t => 
+          (t.tenantId && t.tenantId.toLowerCase() === requestedTenant) ||
+          (t.code && t.code.toLowerCase() === requestedTenant) ||
+          (t.tenantName && t.tenantName.toLowerCase() === requestedTenant) ||
+          (t.name && t.name.toLowerCase() === requestedTenant) ||
+          (t._id && t._id.toString().toLowerCase() === requestedTenant)
+        );
+      }
+
+      const identRegex = new RegExp(`^${cleanIdent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+
+      let targetUser = null;
+      let targetDbName = null;
+      let resolvedTenantDoc = targetTenantDoc;
+
+      if (targetTenantDoc) {
+        targetDbName = targetTenantDoc.tenantDbName || (targetTenantDoc.tenantId ? `iso_${targetTenantDoc.tenantId}` : null);
+        if (targetDbName) {
+          try {
+            const tDb = mongoose.connection.useDb(targetDbName, { useCache: true });
+            targetUser = await tDb.collection('users').findOne({
+              $or: [
+                { username: cleanIdent },
+                { username: identRegex },
+                { email: cleanIdent },
+                { email: identRegex }
+              ]
+            });
+          } catch (err) {
+            logger.error(`Error finding user in ${targetDbName}: ${err.message}`);
+          }
+        }
+      }
+
+      // If not found in specific tenant DB, check master users (global admins) or search across tenants
+      if (!targetUser) {
+        try {
+          const masterUser = await masterDb.collection('users').findOne({
+            $or: [
+              { username: cleanIdent },
+              { username: identRegex },
+              { email: cleanIdent },
+              { email: identRegex }
+            ]
+          });
+          if (masterUser) {
+            targetUser = masterUser;
+            targetDbName = 'master';
+          }
+        } catch (e) {}
+      }
+
+      if (!targetUser && !requestedTenant) {
+        for (const t of allTenants) {
+          try {
+            const tDbName = t.tenantDbName || (t.tenantId ? `iso_${t.tenantId}` : null);
+            if (!tDbName) continue;
+            const tDb = mongoose.connection.useDb(tDbName, { useCache: true });
+            const found = await tDb.collection('users').findOne({
+              $or: [
+                { username: cleanIdent },
+                { username: identRegex },
+                { email: cleanIdent },
+                { email: identRegex }
+              ]
+            });
+            if (found) {
+              targetUser = found;
+              targetDbName = tDbName;
+              resolvedTenantDoc = t;
+              break;
+            }
+          } catch (e) {}
+        }
+      }
+
+      if (!targetUser) {
+        const orgName = resolvedTenantDoc?.tenantName || resolvedTenantDoc?.name || requestedTenant || 'this organization';
+        return res.status(404).json({
+          error: `No user account matching "${cleanIdent}" was found in ${orgName}.`
+        });
+      }
+
+      const userEmail = targetUser.email || (cleanIdent.includes('@') ? cleanIdent : null);
+      if (!userEmail || !userEmail.includes('@')) {
+        return res.status(400).json({
+          error: `User "${targetUser.username}" does not have a registered email address. Please contact your organization administrator.`
+        });
+      }
+
+      // Generate secure reset token
+      const resetToken = crypto.randomBytes(32).toString('hex');
+      const tokenExpires = new Date(Date.now() + 3600000); // 1 Hour
+
+      // Store in Redis with 1-hour TTL
+      const tokenData = {
+        username: targetUser.username,
+        email: userEmail,
+        tenantId: resolvedTenantDoc?.tenantId || resolvedTenantDoc?.code || requestedTenant || 'admin',
+        tenantDbName: targetDbName,
+        createdAt: Date.now()
+      };
+      await cacheService.set(`pwdreset:${resetToken}`, tokenData, 3600);
+
+      // Also persist to user document in the database
+      try {
+        const db = mongoose.connection.useDb(targetDbName || 'master', { useCache: true });
+        await db.collection('users').updateOne(
+          { _id: targetUser._id },
+          {
+            $set: {
+              passwordResetToken: resetToken,
+              passwordResetExpires: tokenExpires,
+              updatedAt: new Date()
+            }
+          }
+        );
+      } catch (dbErr) {
+        logger.warn(`Could not persist reset token in DB document: ${dbErr.message}`);
+      }
+
+      // Construct Reset URL
+      const hostUrl = baseUrl || req.headers.origin || (req.headers.referer ? req.headers.referer.split('/login')[0] : 'http://localhost:5173');
+      const tenantSlug = resolvedTenantDoc ? (resolvedTenantDoc.tenantId || resolvedTenantDoc.code || resolvedTenantDoc.tenantName) : requestedTenant;
+      const resetPath = tenantSlug ? `/login/${encodeURIComponent(tenantSlug)}` : '/login';
+      const resetLink = `${hostUrl}${resetPath}?resetToken=${resetToken}&username=${encodeURIComponent(targetUser.username)}`;
+
+      // Send Email
+      const emailResult = await emailService.sendPasswordResetEmail({
+        to: userEmail,
+        username: targetUser.fullName || targetUser.username,
+        resetLink,
+        tenantName: resolvedTenantDoc?.tenantName || resolvedTenantDoc?.name || 'isomorphic',
+        tenantConfig: resolvedTenantDoc?.tenantConfig || {}
+      });
+
+      // Mask email for privacy (e.g. j***@example.com)
+      const parts = userEmail.split('@');
+      const maskedEmail = parts[0].length > 2
+        ? `${parts[0][0]}***${parts[0][parts[0].length - 1]}@${parts[1]}`
+        : `${parts[0][0]}***@${parts[1]}`;
+
+      return res.json({
+        success: true,
+        message: `A password reset link has been sent to ${maskedEmail}.`,
+        email: maskedEmail,
+        tenant: tenantSlug,
+        previewUrl: emailResult?.previewUrl || null,
+        resetLink
+      });
+    } catch (err) {
+      logger.error(`Error in forgotPassword: ${err.message}`);
+      next(err);
+    }
+  }
+
+  /**
+   * GET /api/auth/verify-reset-token
+   * Check if a reset token is valid and not expired
+   */
+  async verifyResetToken(req, res, next) {
+    try {
+      const token = (req.query.token || req.body.token || '').trim();
+
+      if (!token) {
+        return res.status(400).json({ valid: false, error: 'Reset token is required.' });
+      }
+
+      // 1. Check Redis
+      const cached = await cacheService.get(`pwdreset:${token}`);
+      if (cached && cached.username) {
+        return res.json({
+          valid: true,
+          username: cached.username,
+          tenantId: cached.tenantId
+        });
+      }
+
+      // 2. Check Database fallback
+      const masterDb = this.getMasterDb();
+      const allTenants = await masterDb.collection('tenantInfo').find({}).toArray();
+      for (const t of allTenants) {
+        const tDbName = t.tenantDbName || (t.tenantId ? `iso_${t.tenantId}` : null);
+        if (!tDbName) continue;
+        try {
+          const tDb = mongoose.connection.useDb(tDbName, { useCache: true });
+          const user = await tDb.collection('users').findOne({
+            passwordResetToken: token,
+            passwordResetExpires: { $gt: new Date() }
+          });
+          if (user) {
+            return res.json({
+              valid: true,
+              username: user.username,
+              tenantId: t.tenantId
+            });
+          }
+        } catch (e) {}
+      }
+
+      return res.status(400).json({
+        valid: false,
+        error: 'This password reset link has expired or has already been used.'
+      });
+    } catch (err) {
+      logger.error(`Error verifying reset token: ${err.message}`);
+      next(err);
+    }
+  }
+
+  /**
+   * POST /api/auth/reset-password
+   * Update the user password in tenant database with verification of reset token
+   */
+  async resetPassword(req, res, next) {
+    try {
+      const { token, newPassword, username, tenant } = req.body;
+      const cleanToken = (token || '').trim();
+      const cleanPassword = (newPassword || '').trim();
+
+      if (!cleanToken || !cleanPassword) {
+        return res.status(400).json({ error: 'Reset token and new password are required.' });
+      }
+
+      if (cleanPassword.length < 4) {
+        return res.status(400).json({ error: 'Password must be at least 4 characters long.' });
+      }
+
+      // 1. Validate Token
+      let tokenData = await cacheService.get(`pwdreset:${cleanToken}`);
+      let targetUser = null;
+      let targetDbName = tokenData?.tenantDbName || null;
+      let targetTenantId = tokenData?.tenantId || tenant || null;
+
+      const masterDb = this.getMasterDb();
+      const allTenants = await masterDb.collection('tenantInfo').find({}).toArray();
+
+      if (!targetDbName && targetTenantId) {
+        const tDoc = allTenants.find(t => t.tenantId === targetTenantId || t.code === targetTenantId);
+        if (tDoc) targetDbName = tDoc.tenantDbName || `iso_${tDoc.tenantId}`;
+      }
+
+      // If tokenData from Redis found
+      if (tokenData && tokenData.username) {
+        const db = mongoose.connection.useDb(targetDbName || 'master', { useCache: true });
+        targetUser = await db.collection('users').findOne({ username: tokenData.username });
+      }
+
+      // Fallback: search by token in DBs
+      if (!targetUser) {
+        for (const t of allTenants) {
+          const tDbName = t.tenantDbName || (t.tenantId ? `iso_${t.tenantId}` : null);
+          if (!tDbName) continue;
+          try {
+            const tDb = mongoose.connection.useDb(tDbName, { useCache: true });
+            const found = await tDb.collection('users').findOne({
+              passwordResetToken: cleanToken,
+              passwordResetExpires: { $gt: new Date() }
+            });
+            if (found) {
+              targetUser = found;
+              targetDbName = tDbName;
+              targetTenantId = t.tenantId;
+              break;
+            }
+          } catch (e) {}
+        }
+      }
+
+      // Check master.users fallback
+      if (!targetUser) {
+        try {
+          const mUser = await masterDb.collection('users').findOne({
+            passwordResetToken: cleanToken,
+            passwordResetExpires: { $gt: new Date() }
+          });
+          if (mUser) {
+            targetUser = mUser;
+            targetDbName = 'master';
+          }
+        } catch (e) {}
+      }
+
+      if (!targetUser) {
+        return res.status(400).json({
+          error: 'Invalid or expired password reset link. Please request a new link.'
+        });
+      }
+
+      // Hash new password using bcrypt
+      const hashedPassword = bcrypt.hashSync(cleanPassword, 10);
+
+      // Update in tenant DB users collection
+      const targetDb = mongoose.connection.useDb(targetDbName || 'master', { useCache: true });
+      await targetDb.collection('users').updateOne(
+        { _id: targetUser._id },
+        {
+          $set: {
+            password: hashedPassword,
+            updatedAt: new Date()
+          },
+          $unset: {
+            passwordResetToken: '',
+            passwordResetExpires: ''
+          }
+        }
+      );
+
+      // Invalidate token from Redis
+      await cacheService.del(`pwdreset:${cleanToken}`);
+
+      logger.info(`[Auth] Successfully updated password for user "${targetUser.username}" in database "${targetDbName}".`);
+
+      return res.json({
+        success: true,
+        message: 'Password updated successfully! Please log in with your new credentials.',
+        username: targetUser.username,
+        tenant: targetTenantId
+      });
+    } catch (err) {
+      logger.error(`Error in resetPassword: ${err.message}`);
       next(err);
     }
   }

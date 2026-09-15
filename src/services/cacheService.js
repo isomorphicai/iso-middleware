@@ -99,6 +99,13 @@ class CacheService {
 
     return fresh;
   }
+
+  /**
+   * Alias for wrap (getOrSet)
+   */
+  async getOrSet(key, fetchFn, ttlSeconds = this.defaultTtl) {
+    return this.wrap(key, fetchFn, ttlSeconds);
+  }
 }
 
 module.exports = new CacheService();

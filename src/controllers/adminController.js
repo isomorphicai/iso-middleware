@@ -79,6 +79,18 @@ class AdminController {
         }));
       });
 
+      const tenantFilter = (req.query.tenantId || req.query.tenant || '').trim().toLowerCase();
+      if (tenantFilter && tenantFilter !== 'all') {
+        const filtered = tenants.filter(t => 
+          (t.tenantId && t.tenantId.toLowerCase() === tenantFilter) ||
+          (t.code && t.code.toLowerCase() === tenantFilter) ||
+          (t.name && t.name.toLowerCase() === tenantFilter) ||
+          (t.tenantName && t.tenantName.toLowerCase() === tenantFilter) ||
+          (t._id && t._id.toLowerCase() === tenantFilter)
+        );
+        return res.json(filtered);
+      }
+
       return res.json(tenants);
     } catch (err) {
       logger.error(`Error fetching tenants from master.tenantInfo: ${err.message}`);
@@ -156,6 +168,7 @@ class AdminController {
 
       logger.info(`Created new tenant "${finalName}" in master.tenantInfo with db "${finalDbName}"`);
       await cacheService.del('portal:tenants');
+      await cacheService.delPattern('tenant:branding:*');
 
       // =========================================================================
       // Initialize dynamic tenant DB collections (chatClientSettings, chatClients, genAISettings)
@@ -304,6 +317,7 @@ class AdminController {
 
       logger.info(`Updated tenant "${normalized.name}" in master.tenantInfo`);
       await cacheService.del('portal:tenants');
+      await cacheService.delPattern('tenant:branding:*');
       return res.json(normalized);
     } catch (err) {
       logger.error(`Error updating tenant in master.tenantInfo: ${err.message}`);
@@ -334,6 +348,7 @@ class AdminController {
 
       await col.deleteOne(filter);
       await cacheService.del('portal:tenants');
+      await cacheService.delPattern('tenant:branding:*');
       logger.info(`Deleted tenant "${tenantToDelete.tenantName || tenantToDelete.tenantId}" from master.tenantInfo`);
       return res.json({ message: `Tenant "${tenantToDelete.tenantName || tenantToDelete.tenantId}" deleted successfully.` });
     } catch (err) {
