@@ -15,56 +15,66 @@ class EmailService {
     this.initTransporter();
   }
 
-  getTransporter(customPort = null, customSecure = null) {
-    const host = (process.env.SMTP_HOST || '').trim();
+  getTransporter(customPort = null, customSecure = null, useService = false) {
+    const host = (process.env.SMTP_HOST || 'smtp.gmail.com').trim();
     const user = (process.env.SMTP_USER || '').trim();
     const rawPass = (process.env.SMTP_PASS || '').trim();
-    const pass = (host.includes('gmail') || user.endsWith('@gmail.com')) ? rawPass.replace(/\s+/g, '') : rawPass;
-    
-    // Default to port 587 (STARTTLS) on cloud environments to avoid port 465 blocking
-    const port = customPort || parseInt(process.env.SMTP_PORT || '587', 10);
-    const secure = customSecure !== null ? customSecure : (process.env.SMTP_SECURE === 'true' || port === 465);
+    const isGmail = host.includes('gmail') || user.endsWith('@gmail.com');
+    const pass = isGmail ? rawPass.replace(/\s+/g, '') : rawPass;
 
-    if (host && user && pass) {
-      const isGmail = host.includes('gmail') || user.endsWith('@gmail.com');
-      const smtpHost = isGmail ? 'smtp.gmail.com' : host;
+    if (!user || !pass) {
+      return null;
+    }
 
+    if (useService && isGmail) {
       return nodemailer.createTransport({
-        host: smtpHost,
-        port,
-        secure,
-        auth: {
-          user,
-          pass
-        },
-        tls: {
-          rejectUnauthorized: false
-        },
-        connectionTimeout: 6000,
-        greetingTimeout: 6000,
-        socketTimeout: 8000
+        service: 'gmail',
+        auth: { user, pass },
+        tls: { rejectUnauthorized: false },
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
+        socketTimeout: 20000
       });
     }
 
-    return this.transporter;
+    const defaultPort = process.env.SMTP_SECURE === 'true' ? 465 : (process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : 465);
+    const port = customPort !== null ? customPort : defaultPort;
+    const secure = customSecure !== null ? customSecure : (port === 465 || process.env.SMTP_SECURE === 'true');
+    const smtpHost = isGmail ? 'smtp.gmail.com' : host;
+
+    return nodemailer.createTransport({
+      host: smtpHost,
+      port,
+      secure,
+      auth: {
+        user,
+        pass
+      },
+      tls: {
+        rejectUnauthorized: false
+      },
+      connectionTimeout: 15000,
+      greetingTimeout: 15000,
+      socketTimeout: 20000
+    });
   }
 
   async initTransporter() {
     try {
-      const host = (process.env.SMTP_HOST || '').trim();
       const user = (process.env.SMTP_USER || '').trim();
       const rawPass = (process.env.SMTP_PASS || '').trim();
 
-      if (host && user && rawPass) {
+      if (user && rawPass) {
         this.transporter = this.getTransporter();
+        const host = process.env.SMTP_HOST || 'smtp.gmail.com';
         logger.info(`[EmailService] Configured SMTP transporter for ${host} (${user})`);
       } else {
         this.transporter = nodemailer.createTransport({
           host: 'smtp.ethereal.email',
           port: 587,
           secure: false,
-          connectionTimeout: 6000,
-          socketTimeout: 8000
+          connectionTimeout: 10000,
+          socketTimeout: 15000
         });
       }
     } catch (err) {
@@ -143,37 +153,66 @@ class EmailService {
 
     const textContent = `Hello ${username},\n\nWe received a request to reset your password for ${orgTitle}.\n\nPlease reset your password using the following link:\n${resetLink}\n\nThis link will expire in 1 hour.\n\nIf you did not request this, please ignore this email.`;
 
-    const rawFrom = process.env.SMTP_FROM || (process.env.SMTP_USER ? `"${orgTitle} Security" <${process.env.SMTP_USER}>` : `"${orgTitle} Security" <noreply@isomorphic.ai>`);
+    const user = (process.env.SMTP_USER || '').trim();
+    const rawFrom = process.env.SMTP_FROM || (user ? `"${orgTitle}" <${user}>` : `"${orgTitle}" <noreply@isomorphic.ai>`);
     const fromAddress = rawFrom.replace(/^["']|["']$/g, '').trim();
 
     logger.info(`[EmailService] Sending password reset email to "${to}" for user "${username}" from "${fromAddress}"...`);
 
-    // METHOD 1: Resend HTTP API (RESEND_API_KEY)
-    if (process.env.RESEND_API_KEY) {
-      try {
-        const fromEmail = fromAddress.includes('<') ? fromAddress : (process.env.SMTP_USER || 'onboarding@resend.dev');
-        const res = await axios.post('https://api.resend.com/emails', {
-          from: fromEmail.includes('@resend.dev') || fromEmail.includes('@') ? fromEmail : 'onboarding@resend.dev',
-          to: [to],
-          subject,
-          html,
-          text: textContent
-        }, {
-          headers: {
-            'Authorization': `Bearer ${process.env.RESEND_API_KEY.trim()}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 6000
-        });
+    const mailPayload = {
+      from: fromAddress,
+      to,
+      subject,
+      html,
+      text: textContent
+    };
 
-        logger.info(`[EmailService] Email sent via Resend API! ID: ${res.data?.id}`);
-        return { success: true, messageId: res.data?.id };
-      } catch (resendErr) {
-        logger.warn(`[EmailService] Resend API failed: ${resendErr.response?.data?.message || resendErr.message}. Trying other methods...`);
+    // =========================================================================
+    // METHOD 1 (PRIMARY): Official SMTP Server (Gmail / Custom SMTP)
+    // =========================================================================
+    if (user && process.env.SMTP_PASS) {
+      const configuredPort = parseInt(process.env.SMTP_PORT || (process.env.SMTP_SECURE === 'true' ? '465' : '587'), 10);
+      const configuredSecure = process.env.SMTP_SECURE !== undefined ? process.env.SMTP_SECURE === 'true' : configuredPort === 465;
+
+      const smtpConfigsToTry = [
+        { port: configuredPort, secure: configuredSecure, useService: false },
+        { port: 465, secure: true, useService: false },
+        { port: 587, secure: false, useService: false },
+        { port: null, secure: null, useService: true }
+      ];
+
+      // Remove duplicate configurations
+      const uniqueConfigs = [];
+      for (const c of smtpConfigsToTry) {
+        if (!uniqueConfigs.some(u => u.port === c.port && u.secure === c.secure && u.useService === c.useService)) {
+          uniqueConfigs.push(c);
+        }
       }
+
+      let lastSmtpError = null;
+      for (const config of uniqueConfigs) {
+        try {
+          const transporter = this.getTransporter(config.port, config.secure, config.useService);
+          if (!transporter) continue;
+
+          const info = await transporter.sendMail(mailPayload);
+          logger.info(`[EmailService] ✅ Email sent successfully via SMTP (${config.useService ? 'service: gmail' : 'port ' + config.port})! MessageId: ${info.messageId}`);
+          return {
+            success: true,
+            messageId: info.messageId
+          };
+        } catch (err) {
+          lastSmtpError = err;
+          logger.warn(`[EmailService] SMTP attempt (${config.useService ? 'service: gmail' : 'port ' + config.port}) failed: ${err.message}`);
+        }
+      }
+
+      logger.warn(`[EmailService] All SMTP direct attempts failed: ${lastSmtpError?.message}. Checking fallback providers...`);
     }
 
+    // =========================================================================
     // METHOD 2: Brevo / Sendinblue HTTP API (BREVO_API_KEY)
+    // =========================================================================
     if (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) {
       try {
         const apiKey = (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY).trim();
@@ -189,17 +228,19 @@ class EmailService {
             'api-key': apiKey,
             'Content-Type': 'application/json'
           },
-          timeout: 6000
+          timeout: 10000
         });
 
         logger.info(`[EmailService] Email sent via Brevo API! MessageId: ${res.data?.messageId}`);
         return { success: true, messageId: res.data?.messageId };
       } catch (brevoErr) {
-        logger.warn(`[EmailService] Brevo API failed: ${brevoErr.response?.data?.message || brevoErr.message}. Trying other methods...`);
+        logger.warn(`[EmailService] Brevo API failed: ${brevoErr.response?.data?.message || brevoErr.message}`);
       }
     }
 
+    // =========================================================================
     // METHOD 3: SendGrid HTTP API (SENDGRID_API_KEY)
+    // =========================================================================
     if (process.env.SENDGRID_API_KEY) {
       try {
         const senderEmail = process.env.SMTP_USER || 'noreply@isomorphic.ai';
@@ -216,17 +257,19 @@ class EmailService {
             'Authorization': `Bearer ${process.env.SENDGRID_API_KEY.trim()}`,
             'Content-Type': 'application/json'
           },
-          timeout: 6000
+          timeout: 10000
         });
 
         logger.info(`[EmailService] Email sent via SendGrid API! Status: ${res.status}`);
         return { success: true, messageId: 'sendgrid-' + Date.now() };
       } catch (sgErr) {
-        logger.warn(`[EmailService] SendGrid API failed: ${sgErr.response?.data?.errors?.[0]?.message || sgErr.message}. Trying other methods...`);
+        logger.warn(`[EmailService] SendGrid API failed: ${sgErr.response?.data?.errors?.[0]?.message || sgErr.message}`);
       }
     }
 
+    // =========================================================================
     // METHOD 4: Postmark HTTP API (POSTMARK_SERVER_TOKEN or POSTMARK_API_KEY)
+    // =========================================================================
     if (process.env.POSTMARK_SERVER_TOKEN || process.env.POSTMARK_API_KEY) {
       try {
         const token = (process.env.POSTMARK_SERVER_TOKEN || process.env.POSTMARK_API_KEY).trim();
@@ -242,7 +285,7 @@ class EmailService {
             'X-Postmark-Server-Token': token,
             'Content-Type': 'application/json'
           },
-          timeout: 6000
+          timeout: 10000
         });
 
         logger.info(`[EmailService] Email sent via Postmark API! MessageID: ${res.data?.MessageID}`);
@@ -252,61 +295,38 @@ class EmailService {
       }
     }
 
-    // METHOD 5: Multi-Port SMTP Fallback (Fast 3s timeout for cloud environments)
-    const mailPayload = {
-      from: fromAddress,
-      to,
-      subject,
-      html,
-      text: textContent
-    };
-
-    const host = (process.env.SMTP_HOST || '').trim();
-    const user = (process.env.SMTP_USER || '').trim();
-    const configuredPort = parseInt(process.env.SMTP_PORT || '587', 10);
-
-    const portsToTry = [
-      { port: 587, secure: false },
-      { port: configuredPort, secure: configuredPort === 465 },
-      { port: 465, secure: true }
-    ];
-
-    const uniqueConfigs = [];
-    for (const c of portsToTry) {
-      if (!uniqueConfigs.some(u => u.port === c.port && u.secure === c.secure)) {
-        uniqueConfigs.push(c);
-      }
-    }
-
-    let lastError = null;
-    for (const config of uniqueConfigs) {
+    // =========================================================================
+    // METHOD 5: Resend HTTP API (RESEND_API_KEY - Optional Last Fallback)
+    // =========================================================================
+    if (process.env.RESEND_API_KEY) {
       try {
-        const transporter = this.getTransporter(config.port, config.secure);
-        if (!transporter) continue;
+        const fromEmail = fromAddress.includes('<') ? fromAddress : (process.env.SMTP_USER || 'onboarding@resend.dev');
+        const res = await axios.post('https://api.resend.com/emails', {
+          from: fromEmail.includes('@') ? fromEmail : 'onboarding@resend.dev',
+          to: [to],
+          subject,
+          html,
+          text: textContent
+        }, {
+          headers: {
+            'Authorization': `Bearer ${process.env.RESEND_API_KEY.trim()}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 10000
+        });
 
-        const sendPromise = transporter.sendMail(mailPayload);
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error(`SMTP connection timed out after 3s on port ${config.port}`)), 3000)
-        );
-
-        const info = await Promise.race([sendPromise, timeoutPromise]);
-        logger.info(`[EmailService] Email sent successfully via SMTP port ${config.port}! MessageId: ${info.messageId}`);
-        return {
-          success: true,
-          messageId: info.messageId
-        };
-      } catch (err) {
-        lastError = err;
-        logger.warn(`[EmailService] SMTP attempt on port ${config.port} failed: ${err.message}`);
+        logger.info(`[EmailService] Email sent via Resend API! ID: ${res.data?.id}`);
+        return { success: true, messageId: res.data?.id };
+      } catch (resendErr) {
+        logger.warn(`[EmailService] Resend API failed: ${resendErr.response?.data?.message || resendErr.message}`);
       }
     }
 
-    logger.error(`[EmailService] All email delivery attempts failed: ${lastError?.message}`);
+    logger.error(`[EmailService] All email delivery attempts failed.`);
     
-    // Return structured failure instead of crashing the flow
     return {
       success: false,
-      error: `Email delivery failed (${lastError?.message || 'Host blocked SMTP ports'}). Set RESEND_API_KEY or BREVO_API_KEY in Render dashboard for instant HTTPS email delivery.`,
+      error: 'Email delivery failed. Please verify SMTP credentials in environment.',
       resetLink
     };
   }
