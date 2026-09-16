@@ -27,6 +27,7 @@ class EmailService {
     const buttonFontColor = tenantConfig.buttonFontColor || '#ffffff';
     const logoUrl = tenantConfig.logoBigUrl || tenantConfig.logoSmallUrl || '';
     const orgTitle = tenantConfig.instituteName || tenantName || 'isomorphic AI';
+    const supportTitle = 'Isomorphic Support';
 
     const subject = `Password Reset Request - ${orgTitle}`;
     
@@ -55,12 +56,12 @@ class EmailService {
         <div class="container">
           <div class="header">
             ${logoUrl ? `<img src="${logoUrl}" alt="${orgTitle}" style="max-height: 48px; max-width: 220px; object-fit: contain; margin-bottom: 8px;" />` : ''}
-            <h1>${orgTitle}</h1>
+            <h1>${supportTitle}</h1>
           </div>
           <div class="content">
             <div class="greeting">Hello ${username},</div>
             <p class="text">
-              We received a request to reset your password for your <strong>${orgTitle}</strong> account.
+              We received a request to reset your password for your <strong>${orgTitle}</strong> organization account.
               Click the button below to set a new password.
             </p>
             <div class="btn-container">
@@ -75,17 +76,17 @@ class EmailService {
             </div>
           </div>
           <div class="footer">
-            &copy; ${new Date().getFullYear()} ${orgTitle} • Powered by Isomorphic AI
+            &copy; ${new Date().getFullYear()} ${supportTitle} • Organization: ${orgTitle}
           </div>
         </div>
       </body>
       </html>
     `;
 
-    const textContent = `Hello ${username},\n\nWe received a request to reset your password for ${orgTitle}.\n\nPlease reset your password using the following link:\n${resetLink}\n\nThis link will expire in 1 hour.\n\nIf you did not request this, please ignore this email.`;
+    const textContent = `Hello ${username},\n\nWe received a request to reset your password for your ${orgTitle} organization account.\n\nPlease reset your password using the following link:\n${resetLink}\n\nThis link will expire in 1 hour.\n\nIf you did not request this, please ignore this email.\n\nBest regards,\n${supportTitle}`;
 
     const user = (process.env.SMTP_USER || '').trim();
-    const rawFrom = process.env.SMTP_FROM || (user ? `"${orgTitle}" <${user}>` : `"${orgTitle}" <noreply@isomorphic.ai>`);
+    const rawFrom = process.env.SMTP_FROM || (user ? `"${supportTitle}" <${user}>` : `"${supportTitle}" <noreply@isomorphic.ai>`);
     const fromAddress = rawFrom.replace(/^["']|["']$/g, '').trim();
 
     logger.info(`[EmailService] Sending password reset email to "${to}" for user "${username}"...`);
@@ -101,7 +102,7 @@ class EmailService {
           subject,
           html,
           text: textContent,
-          senderName: orgTitle
+          senderName: supportTitle
         }, {
           headers: { 'Content-Type': 'application/json' },
           timeout: 10000,
