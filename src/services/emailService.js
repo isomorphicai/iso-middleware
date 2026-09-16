@@ -56,7 +56,7 @@ class EmailService {
         <div class="container">
           <div class="header">
             ${logoUrl ? `<img src="${logoUrl}" alt="${orgTitle}" style="max-height: 48px; max-width: 220px; object-fit: contain; margin-bottom: 8px;" />` : ''}
-            <h1>${supportTitle}</h1>
+            <h1>${orgTitle}</h1>
           </div>
           <div class="content">
             <div class="greeting">Hello ${username},</div>
