@@ -976,6 +976,22 @@ class AuthController {
 
         const tenantDoc = await masterDb.collection('tenantInfo').findOne(query);
         if (!tenantDoc) {
+          if (identifier.toLowerCase() === 'admin') {
+            return {
+              _id: 'admin',
+              tenantId: 'admin',
+              tenantName: 'System Administration',
+              name: 'System Administration',
+              code: 'admin',
+              tenantActive: true,
+              tenantConfig: {
+                instituteName: 'Enterprise AI Administration',
+                ButtonandLeftBarColor: '#0A2240',
+                buttonFontColor: '#ffffff',
+                BordersColor: '#578b96'
+              }
+            };
+          }
           return null;
         }
 
