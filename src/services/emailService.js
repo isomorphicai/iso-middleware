@@ -1,8 +1,7 @@
-const nodemailer = require('nodemailer');
 const axios = require('axios');
+const nodemailer = require('nodemailer');
 const logger = require('../helpers/logger');
 const path = require('path');
-const fs = require('fs');
 
 // Ensure environment variables are loaded
 try {
@@ -12,74 +11,6 @@ try {
 class EmailService {
   constructor() {
     this.transporter = null;
-    this.initTransporter();
-  }
-
-  getTransporter(customPort = null, customSecure = null, useService = false) {
-    const host = (process.env.SMTP_HOST || 'smtp.gmail.com').trim();
-    const user = (process.env.SMTP_USER || '').trim();
-    const rawPass = (process.env.SMTP_PASS || '').trim();
-    const isGmail = host.includes('gmail') || user.endsWith('@gmail.com');
-    const pass = isGmail ? rawPass.replace(/\s+/g, '') : rawPass;
-
-    if (!user || !pass) {
-      return null;
-    }
-
-    if (useService && isGmail) {
-      return nodemailer.createTransport({
-        service: 'gmail',
-        auth: { user, pass },
-        tls: { rejectUnauthorized: false },
-        connectionTimeout: 15000,
-        greetingTimeout: 15000,
-        socketTimeout: 20000
-      });
-    }
-
-    const defaultPort = process.env.SMTP_SECURE === 'true' ? 465 : (process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : 465);
-    const port = customPort !== null ? customPort : defaultPort;
-    const secure = customSecure !== null ? customSecure : (port === 465 || process.env.SMTP_SECURE === 'true');
-    const smtpHost = isGmail ? 'smtp.gmail.com' : host;
-
-    return nodemailer.createTransport({
-      host: smtpHost,
-      port,
-      secure,
-      auth: {
-        user,
-        pass
-      },
-      tls: {
-        rejectUnauthorized: false
-      },
-      connectionTimeout: 15000,
-      greetingTimeout: 15000,
-      socketTimeout: 20000
-    });
-  }
-
-  async initTransporter() {
-    try {
-      const user = (process.env.SMTP_USER || '').trim();
-      const rawPass = (process.env.SMTP_PASS || '').trim();
-
-      if (user && rawPass) {
-        this.transporter = this.getTransporter();
-        const host = process.env.SMTP_HOST || 'smtp.gmail.com';
-        logger.info(`[EmailService] Configured SMTP transporter for ${host} (${user})`);
-      } else {
-        this.transporter = nodemailer.createTransport({
-          host: 'smtp.ethereal.email',
-          port: 587,
-          secure: false,
-          connectionTimeout: 10000,
-          socketTimeout: 15000
-        });
-      }
-    } catch (err) {
-      logger.warn(`[EmailService] Transporter init error: ${err.message}`);
-    }
   }
 
   /**
@@ -157,65 +88,14 @@ class EmailService {
     const rawFrom = process.env.SMTP_FROM || (user ? `"${orgTitle}" <${user}>` : `"${orgTitle}" <noreply@isomorphic.ai>`);
     const fromAddress = rawFrom.replace(/^["']|["']$/g, '').trim();
 
-    logger.info(`[EmailService] Sending password reset email to "${to}" for user "${username}" from "${fromAddress}"...`);
-
-    const mailPayload = {
-      from: fromAddress,
-      to,
-      subject,
-      html,
-      text: textContent
-    };
+    logger.info(`[EmailService] Sending password reset email to "${to}" for user "${username}"...`);
 
     // =========================================================================
-    // METHOD 1 (PRIMARY): Official SMTP Server (Gmail / Custom SMTP)
+    // PRIMARY METHOD: Google Apps Script Webhook (Instant HTTPS directly from Gmail)
     // =========================================================================
-    if (user && process.env.SMTP_PASS) {
-      const configuredPort = parseInt(process.env.SMTP_PORT || (process.env.SMTP_SECURE === 'true' ? '465' : '587'), 10);
-      const configuredSecure = process.env.SMTP_SECURE !== undefined ? process.env.SMTP_SECURE === 'true' : configuredPort === 465;
-
-      const smtpConfigsToTry = [
-        { port: configuredPort, secure: configuredSecure, useService: false },
-        { port: 465, secure: true, useService: false },
-        { port: 587, secure: false, useService: false },
-        { port: null, secure: null, useService: true }
-      ];
-
-      // Remove duplicate configurations
-      const uniqueConfigs = [];
-      for (const c of smtpConfigsToTry) {
-        if (!uniqueConfigs.some(u => u.port === c.port && u.secure === c.secure && u.useService === c.useService)) {
-          uniqueConfigs.push(c);
-        }
-      }
-
-      let lastSmtpError = null;
-      for (const config of uniqueConfigs) {
-        try {
-          const transporter = this.getTransporter(config.port, config.secure, config.useService);
-          if (!transporter) continue;
-
-          const info = await transporter.sendMail(mailPayload);
-          logger.info(`[EmailService] ✅ Email sent successfully via SMTP (${config.useService ? 'service: gmail' : 'port ' + config.port})! MessageId: ${info.messageId}`);
-          return {
-            success: true,
-            messageId: info.messageId
-          };
-        } catch (err) {
-          lastSmtpError = err;
-          logger.warn(`[EmailService] SMTP attempt (${config.useService ? 'service: gmail' : 'port ' + config.port}) failed: ${err.message}`);
-        }
-      }
-
-      logger.warn(`[EmailService] All SMTP direct attempts failed: ${lastSmtpError?.message}. Checking fallback providers...`);
-    }
-
-    // =========================================================================
-    // METHOD 2: Google Apps Script Webhook (Direct from isomorphicofficial@gmail.com via HTTPS)
-    // =========================================================================
-    if (process.env.GMAIL_SCRIPT_URL || process.env.GOOGLE_SCRIPT_URL) {
+    const scriptUrl = (process.env.GMAIL_SCRIPT_URL || process.env.GOOGLE_SCRIPT_URL || '').trim();
+    if (scriptUrl) {
       try {
-        const scriptUrl = (process.env.GMAIL_SCRIPT_URL || process.env.GOOGLE_SCRIPT_URL).trim();
         const res = await axios.post(scriptUrl, {
           to,
           subject,
@@ -224,136 +104,59 @@ class EmailService {
           senderName: orgTitle
         }, {
           headers: { 'Content-Type': 'application/json' },
-          timeout: 12000,
+          timeout: 10000,
           maxRedirects: 5
         });
 
-        if (res.data && (res.data.success || res.status === 200 || res.status === 302)) {
-          logger.info(`[EmailService] ✅ Email sent directly from official Gmail via Google Webhook!`);
+        if (res.status >= 200 && res.status < 400) {
+          logger.info(`[EmailService] ⚡ Email sent instantly via Google Apps Script (Official Gmail)! Recipient: ${to}`);
           return { success: true, messageId: 'gmail-script-' + Date.now() };
         }
       } catch (scriptErr) {
-        logger.warn(`[EmailService] Google Script Webhook attempt failed: ${scriptErr.message}`);
+        logger.warn(`[EmailService] Google Script Webhook failed: ${scriptErr.message}`);
       }
     }
 
     // =========================================================================
-    // METHOD 3: Brevo / Sendinblue HTTP API (BREVO_API_KEY)
+    // FALLBACK: Direct SMTP (Only if GMAIL_SCRIPT_URL is not configured or failed)
     // =========================================================================
-    if (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) {
+    if (user && process.env.SMTP_PASS) {
       try {
-        const apiKey = (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY).trim();
-        const senderEmail = process.env.SMTP_USER || 'noreply@isomorphic.ai';
-        const res = await axios.post('https://api.brevo.com/v3/smtp/email', {
-          sender: { name: orgTitle, email: senderEmail },
-          to: [{ email: to }],
-          subject,
-          htmlContent: html,
-          textContent
-        }, {
-          headers: {
-            'api-key': apiKey,
-            'Content-Type': 'application/json'
-          },
-          timeout: 10000
+        const rawPass = (process.env.SMTP_PASS || '').trim();
+        const pass = user.endsWith('@gmail.com') ? rawPass.replace(/\s+/g, '') : rawPass;
+        const port = parseInt(process.env.SMTP_PORT || '465', 10);
+        const secure = process.env.SMTP_SECURE === 'true' || port === 465;
+
+        const transporter = nodemailer.createTransport({
+          host: process.env.SMTP_HOST || 'smtp.gmail.com',
+          port,
+          secure,
+          auth: { user, pass },
+          tls: { rejectUnauthorized: false },
+          connectionTimeout: 5000,
+          greetingTimeout: 5000,
+          socketTimeout: 5000
         });
 
-        logger.info(`[EmailService] Email sent via Brevo API! MessageId: ${res.data?.messageId}`);
-        return { success: true, messageId: res.data?.messageId };
-      } catch (brevoErr) {
-        logger.warn(`[EmailService] Brevo API failed: ${brevoErr.response?.data?.message || brevoErr.message}`);
-      }
-    }
-
-    // =========================================================================
-    // METHOD 3: SendGrid HTTP API (SENDGRID_API_KEY)
-    // =========================================================================
-    if (process.env.SENDGRID_API_KEY) {
-      try {
-        const senderEmail = process.env.SMTP_USER || 'noreply@isomorphic.ai';
-        const res = await axios.post('https://api.sendgrid.com/v3/mail/send', {
-          personalizations: [{ to: [{ email: to }] }],
-          from: { email: senderEmail, name: orgTitle },
-          subject,
-          content: [
-            { type: 'text/plain', value: textContent },
-            { type: 'text/html', value: html }
-          ]
-        }, {
-          headers: {
-            'Authorization': `Bearer ${process.env.SENDGRID_API_KEY.trim()}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 10000
-        });
-
-        logger.info(`[EmailService] Email sent via SendGrid API! Status: ${res.status}`);
-        return { success: true, messageId: 'sendgrid-' + Date.now() };
-      } catch (sgErr) {
-        logger.warn(`[EmailService] SendGrid API failed: ${sgErr.response?.data?.errors?.[0]?.message || sgErr.message}`);
-      }
-    }
-
-    // =========================================================================
-    // METHOD 4: Postmark HTTP API (POSTMARK_SERVER_TOKEN or POSTMARK_API_KEY)
-    // =========================================================================
-    if (process.env.POSTMARK_SERVER_TOKEN || process.env.POSTMARK_API_KEY) {
-      try {
-        const token = (process.env.POSTMARK_SERVER_TOKEN || process.env.POSTMARK_API_KEY).trim();
-        const senderEmail = process.env.SMTP_USER || 'noreply@isomorphic.ai';
-        const res = await axios.post('https://api.postmarkapp.com/email', {
-          From: senderEmail,
-          To: to,
-          Subject: subject,
-          HtmlBody: html,
-          TextBody: textContent
-        }, {
-          headers: {
-            'X-Postmark-Server-Token': token,
-            'Content-Type': 'application/json'
-          },
-          timeout: 10000
-        });
-
-        logger.info(`[EmailService] Email sent via Postmark API! MessageID: ${res.data?.MessageID}`);
-        return { success: true, messageId: res.data?.MessageID };
-      } catch (pmErr) {
-        logger.warn(`[EmailService] Postmark API failed: ${pmErr.response?.data?.Message || pmErr.message}`);
-      }
-    }
-
-    // =========================================================================
-    // METHOD 5: Resend HTTP API (RESEND_API_KEY - Optional Last Fallback)
-    // =========================================================================
-    if (process.env.RESEND_API_KEY) {
-      try {
-        const fromEmail = fromAddress.includes('<') ? fromAddress : (process.env.SMTP_USER || 'onboarding@resend.dev');
-        const res = await axios.post('https://api.resend.com/emails', {
-          from: fromEmail.includes('@') ? fromEmail : 'onboarding@resend.dev',
-          to: [to],
+        const info = await transporter.sendMail({
+          from: fromAddress,
+          to,
           subject,
           html,
           text: textContent
-        }, {
-          headers: {
-            'Authorization': `Bearer ${process.env.RESEND_API_KEY.trim()}`,
-            'Content-Type': 'application/json'
-          },
-          timeout: 10000
         });
 
-        logger.info(`[EmailService] Email sent via Resend API! ID: ${res.data?.id}`);
-        return { success: true, messageId: res.data?.id };
-      } catch (resendErr) {
-        logger.warn(`[EmailService] Resend API failed: ${resendErr.response?.data?.message || resendErr.message}`);
+        logger.info(`[EmailService] Email sent via direct SMTP! MessageId: ${info.messageId}`);
+        return { success: true, messageId: info.messageId };
+      } catch (smtpErr) {
+        logger.warn(`[EmailService] Direct SMTP failed: ${smtpErr.message}`);
       }
     }
 
     logger.error(`[EmailService] All email delivery attempts failed.`);
-    
     return {
       success: false,
-      error: 'Email delivery failed. Please verify SMTP credentials in environment.',
+      error: 'Email delivery failed. Please ensure GMAIL_SCRIPT_URL is configured in environment.',
       resetLink
     };
   }
