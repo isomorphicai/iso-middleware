@@ -211,7 +211,34 @@ class EmailService {
     }
 
     // =========================================================================
-    // METHOD 2: Brevo / Sendinblue HTTP API (BREVO_API_KEY)
+    // METHOD 2: Google Apps Script Webhook (Direct from isomorphicofficial@gmail.com via HTTPS)
+    // =========================================================================
+    if (process.env.GMAIL_SCRIPT_URL || process.env.GOOGLE_SCRIPT_URL) {
+      try {
+        const scriptUrl = (process.env.GMAIL_SCRIPT_URL || process.env.GOOGLE_SCRIPT_URL).trim();
+        const res = await axios.post(scriptUrl, {
+          to,
+          subject,
+          html,
+          text: textContent,
+          senderName: orgTitle
+        }, {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 12000,
+          maxRedirects: 5
+        });
+
+        if (res.data && (res.data.success || res.status === 200 || res.status === 302)) {
+          logger.info(`[EmailService] ✅ Email sent directly from official Gmail via Google Webhook!`);
+          return { success: true, messageId: 'gmail-script-' + Date.now() };
+        }
+      } catch (scriptErr) {
+        logger.warn(`[EmailService] Google Script Webhook attempt failed: ${scriptErr.message}`);
+      }
+    }
+
+    // =========================================================================
+    // METHOD 3: Brevo / Sendinblue HTTP API (BREVO_API_KEY)
     // =========================================================================
     if (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) {
       try {
